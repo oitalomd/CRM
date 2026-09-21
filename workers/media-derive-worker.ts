@@ -20,6 +20,7 @@ import { deriveVideoText } from "@/lib/messaging/media/video-derive";
 import { apiTranscriptionProvider } from "@/lib/messaging/media/transcription";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { motivoDaRecusaDeDestino } from "@/lib/automation/destinos-internos-autorizados";
 import { DETALHE_TECNICO } from "@/lib/event-log/aviso-de-evento-morto";
 
@@ -53,7 +54,7 @@ export async function deriveMessageMedia(row: EventRow): Promise<HandlerResult> 
   const messageId = (row.payload.message_id as string | undefined) ?? row.entity_id;
   if (!messageId) return { consumer_key, status: "skipped", detail: "no message_id" };
 
-  const admin = createAdminClient();
+  const admin = await getTenantDataClient(row.organization_id, createAdminClient());
   const { data, error } = await admin
     .from("messages")
     .select("id, organization_id, type, media_mime, media_storage_path, media_derived_status")
@@ -559,7 +560,7 @@ async function avisarMidiaNaoLida(
   detalheTecnico?: string,
 ): Promise<void> {
   try {
-    const admin = createAdminClient();
+    const admin = await getTenantDataClient(organizationId, createAdminClient());
     const { data: jaAberto } = await admin
       .from("agent_inbox_items")
       .select("id")
@@ -598,3 +599,4 @@ async function avisarMidiaNaoLida(
     });
   }
 }
+
