@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ensureDataPlaneSchema } from "./data-plane-schema";
+import { assertDataPlaneCompatibility, ensureDataPlaneSchema } from "./data-plane-schema";
 
 function fakePool(rows: Array<Record<string, unknown>>) {
   const calls: string[] = [];
@@ -16,6 +16,13 @@ function fakePool(rows: Array<Record<string, unknown>>) {
 }
 
 describe("data-plane schema runner", () => {
+  it("rejeita banco que não expõe os schemas e extensões do Supabase", async () => {
+    const { pool } = fakePool([]);
+    await expect(assertDataPlaneCompatibility(pool)).rejects.toThrow(
+      "data_plane_database_incompatible:auth,storage,extensions,public.vector,extensions.uuid_generate_v4(),extensions.gen_random_bytes(integer)",
+    );
+  });
+
   it("inicializa e registra a versão dentro da transação", async () => {
     const { pool, calls } = fakePool([]);
 
