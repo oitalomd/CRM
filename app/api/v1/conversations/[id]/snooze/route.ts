@@ -20,7 +20,8 @@ import { audit } from "@/lib/audit";
 import { fail, ok, noContent } from "@/lib/api/wrappers";
 import { requireRole } from "@/lib/auth/require-role";
 import { snoozeSchema } from "@/lib/schemas/snooze";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { traduzir } from "@/lib/i18n/dicionario";
 
 export const dynamic = "force-dynamic";
@@ -53,7 +54,12 @@ export async function POST(req: NextRequest, { params }: RouteParams): Promise<R
   const nowIso = new Date().toISOString();
   const snoozeUntil = new Date(Date.now() + duration_hours * 3600_000).toISOString();
 
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(org.orgId, createAdminClient());
+  } catch (err) {
+    return fail("tenant_data_plane_unavailable", err instanceof Error ? err.message : "Tenant data plane unavailable.", 503, { requestId });
+  }
   const { data, error } = await supabase
     .from("conversations")
     .update({ snooze_until: snoozeUntil, snoozed_at: nowIso, snoozed_by_user_id: user.id })
@@ -87,7 +93,12 @@ export async function DELETE(_req: NextRequest, { params }: RouteParams): Promis
   const { user, org } = authz;
   const { id } = await params;
 
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(org.orgId, createAdminClient());
+  } catch (err) {
+    return fail("tenant_data_plane_unavailable", err instanceof Error ? err.message : "Tenant data plane unavailable.", 503, { requestId });
+  }
   const { data, error } = await supabase
     .from("conversations")
     .update({ snooze_until: null, snoozed_at: null, snoozed_by_user_id: null })
@@ -108,3 +119,4 @@ export async function DELETE(_req: NextRequest, { params }: RouteParams): Promis
   });
   return noContent(requestId);
 }
+
