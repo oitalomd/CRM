@@ -1,10 +1,12 @@
-import type { Pool, PoolClient } from "pg";
-
 export const DATA_PLANE_SCHEMA_VERSION = 381;
 export const DATA_PLANE_SCHEMA_NAME = "deskcomm_data_plane_schema";
 
 type QueryResult = { rows: Array<Record<string, unknown>>; rowCount: number | null };
-type TransactionPool = Pick<Pool, "connect">;
+export type DataPlaneSchemaClient = {
+  query(sql: string, values?: unknown[]): Promise<QueryResult>;
+  release(): void;
+};
+type TransactionPool = { connect(): Promise<DataPlaneSchemaClient> };
 
 export type DataPlaneSchemaResult = {
   action: "initialized" | "updated" | "unchanged";
@@ -72,6 +74,4 @@ export async function ensureDataPlaneSchema(
     client.release();
   }
 }
-
-export type DataPlaneSchemaClient = Pick<PoolClient, "query" | "release">;
 
