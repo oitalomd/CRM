@@ -20,11 +20,15 @@ const connectionUri = z
   .refine((value) => value.startsWith("postgres://") || value.startsWith("postgresql://"), {
     message: "connection_uri deve usar postgres:// ou postgresql://",
   });
+const apiUrl = z.string().trim().url().max(2048);
+const apiKey = z.string().trim().min(20).max(4096);
 
 const dataPlaneAction = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("register"),
     connection_uri: connectionUri,
+    api_url: apiUrl,
+    api_key: apiKey,
     schema_version: z.number().int().min(0).default(0),
   }),
   z.object({ action: z.literal("promote") }),
@@ -107,6 +111,8 @@ export async function POST(
       await registerOrganizationDataPlane({
         organizationId: id,
         connectionUri: parsed.data.connection_uri,
+        apiUrl: parsed.data.api_url,
+        apiKey: parsed.data.api_key,
         status: "provisioning",
         schemaVersion: parsed.data.schema_version,
       });
