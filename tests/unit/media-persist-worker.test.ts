@@ -35,6 +35,9 @@ vi.mock("@/lib/supabase/admin", () => ({
     rpc: rpcMock,
   }),
 }));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({
+  getTenantDataClient: vi.fn(async (_organizationId: string, admin: unknown) => admin),
+}));
 
 /**
  * A sessão que o worker resolve para escolher QUEM baixa.
@@ -137,3 +140,4 @@ describe("persistMessageMedia", () => {
     );
   });
 });
+
