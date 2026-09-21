@@ -22,7 +22,8 @@ Adotar uma arquitetura de dois planos:
 
 1. **Control plane**: o Supabase atual mantém autenticação, usuários,
    organizações, membros, estado de provisionamento e o catálogo de conexões.
-2. **Data plane**: cada organização recebe um banco PostgreSQL dedicado,
+2. **Data plane**: cada organização recebe um projeto/banco Supabase dedicado
+   (PostgreSQL compatível com os schemas e extensões usados pelo Deskcomm),
    identificado por um registro no control plane. Dados operacionais do CRM,
    conversas, contatos, pipelines, configurações, IA e auditoria do tenant
    ficam no banco dedicado.
@@ -53,7 +54,7 @@ dual-read/dual-write apenas onde houver uma migração de dados real.
    produção.
 3. Extrair o acesso ao data plane para uma interface única e torná-la
    request-scoped.
-4. Migrar primeiro um tenant de teste para um PostgreSQL dedicado.
+4. Migrar primeiro um tenant de teste para um projeto/banco Supabase dedicado.
 5. Rodar testes de isolamento positivo e negativo, workers, realtime, storage,
    webhooks e migrações repetidas.
 6. Migrar a organização atual em janela controlada, com backup e rollback.
@@ -77,4 +78,15 @@ A imagem `ghcr.io/melgarafael/deskcommcrm:stable` não contém esta arquitetura.
 O deploy precisa usar uma imagem própria construída e publicada com tag
 imutável. A VPS atual deve permanecer apontando para a imagem estável até a
 homologação terminar.
+
+## Compatibilidade do data plane
+
+O `supabase/baseline.sql` atual é um baseline completo do ecossistema Supabase:
+ele usa `auth`, `storage`, `extensions` e extensões como `pgvector`. Portanto,
+uma instância PostgreSQL vanilla não é um data plane válido para o código atual.
+O provisionador deve rejeitar conexões sem esses pré-requisitos antes de
+executar SQL. Não é permitido criar schemas/tabelas falsos para simular os
+serviços internos do Supabase. Se PostgreSQL vanilla for uma exigência futura,
+será necessário primeiro publicar um baseline de negócio independente, sem
+dependências de autenticação/storage do Supabase.
 
