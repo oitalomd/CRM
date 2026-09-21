@@ -2,6 +2,8 @@ import { type NextRequest } from "next/server";
 import { z } from "zod";
 import { requirePlatformAdmin } from "@/lib/auth/requirePlatformAdmin";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { resolveOrganizationDataPlane } from "@/lib/tenancy/data-plane-boundary";
+import { listDedicatedConversations } from "@/lib/tenancy/data-plane-inbox";
 import { ok, fail } from "@/lib/api/wrappers";
 import { audit } from "@/lib/audit";
 import { randomUUID } from "node:crypto";
@@ -69,6 +71,55 @@ export async function GET(req: NextRequest) {
 
   // Decode cursor for keyset pagination
   const cursorPayload = cursor ? decodeCursor(cursor) : null;
+
+  // A tenant with an activated data plane must never be read through the
+  // shared Supabase client. Cross-tenant platform-admin views remain on the
+  // shared path until they are implemented as an explicit aggregator.
+  if (tenant_id) {
+    try {
+      const plane = await resolveOrganizationDataPlane(tenant_id, admin);
+      if (plane.mode === "dedicated") {
+        const dedicatedRows = await listDedicatedConversations({
+          pool: plane.pool,
+          tenantId: tenant_id,
+          q,
+          status,
+          cursorPayload,
+          limit,
+        });
+        const has_more = dedicatedRows.length > limit;
+        const page = has_more ? dedicatedRows.slice(0, limit) : dedicatedRows;
+        const lastRow = page.at(-1);
+        const nextCursor = has_more && lastRow
+          ? encodeCursor({
+              last_inbound_at: typeof lastRow.last_inbound_at === "string"
+                ? lastRow.last_inbound_at
+                : null,
+              id: String(lastRow.id),
+            })
+          : null;
+
+        void audit({
+          action: "platform_admin.inbox_listed",
+          actorUserId: adminCtx.user.id,
+          actingAsPlatformAdmin: true,
+          bypassedRls: true,
+          requestId,
+          metadata: {
+            filters: { status: status ?? null, tenant_id, has_q: !!q },
+            result_count: page.length,
+            data_plane: "dedicated",
+          },
+        });
+        return ok(page, { requestId, meta: { has_more, cursor: nextCursor } });
+      }
+    } catch (error) {
+      return fail("data_plane_unavailable", "Dedicated data plane query failed", 503, {
+        requestId,
+        details: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 
   // Build query — cross-tenant intentional, service-role bypasses RLS
   let query = admin
@@ -154,3 +205,4 @@ export async function GET(req: NextRequest) {
     meta: { has_more, cursor: nextCursor },
   });
 }
+
