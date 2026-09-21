@@ -3,6 +3,7 @@ import { Pool } from "pg";
 
 import { byteaToBuffer, decryptKey, encryptKey, bufToBytea } from "@/lib/crypto/aes_gcm";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { DATA_PLANE_SCHEMA_NAME, DATA_PLANE_SCHEMA_VERSION } from "./data-plane-schema";
 
 const READY = "ready" as const;
 
@@ -162,6 +163,13 @@ export async function verifyAndPromoteOrganizationDataPlane(
   const healthcheckedAt = new Date().toISOString();
   try {
     await pool.query("select 1");
+    const schema = await pool.query(
+      `select schema_version from public.${DATA_PLANE_SCHEMA_NAME} where singleton = true`,
+    );
+    const schemaVersion = Number(schema.rows[0]?.schema_version);
+    if (schemaVersion !== DATA_PLANE_SCHEMA_VERSION) {
+      throw new Error(`data_plane_schema_version_mismatch:${schemaVersion || "missing"}`);
+    }
     const { error } = await registry(admin)
       .from("organization_data_planes")
       .update({
