@@ -33,6 +33,9 @@ interface RegistryClient {
     ): Promise<{
       error: { message: string } | null;
     }>;
+    update(values: Record<string, unknown>): {
+      eq(column: string, value: string): Promise<{ error: { message: string } | null }>;
+    };
   };
 }
 
@@ -48,6 +51,39 @@ function connectionUri(row: DataPlaneRow): string {
     iv: byteaToBuffer(row.connection_uri_iv),
     tag: byteaToBuffer(row.connection_uri_tag),
   });
+}
+
+async function readDataPlaneRow(
+  organizationId: string,
+  admin: SupabaseClient,
+): Promise<DataPlaneRow> {
+  const { data, error } = await registry(admin)
+    .from("organization_data_planes")
+    .select(
+      "organization_id,status,connection_uri_encrypted,connection_uri_iv,connection_uri_tag,schema_version",
+    )
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+  if (error) throw new Error(`data_plane_registry_read_failed: ${error.message}`);
+  if (!data || data.organization_id !== organizationId) {
+    throw new Error("data_plane_not_registered");
+  }
+  return data;
+}
+
+function createOrganizationPool(organizationId: string, row: DataPlaneRow): Pool {
+  const pool = new Pool({
+    connectionString: connectionUri(row),
+    max: 5,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 5_000,
+    application_name: `deskcomm:${organizationId}`,
+  });
+  pool.on("error", () => {
+    // Pool errors must not crash the Next process. The next request will
+    // recreate the pool after invalidation or use the existing healthy pool.
+  });
+  return pool;
 }
 
 /**
@@ -94,34 +130,57 @@ export async function getOrganizationDataPlanePool(
   const cached = pools.get(organizationId);
   if (cached) return cached;
 
-  const { data, error } = await registry(admin)
-    .from("organization_data_planes")
-    .select(
-      "organization_id,status,connection_uri_encrypted,connection_uri_iv,connection_uri_tag,schema_version",
-    )
-    .eq("organization_id", organizationId)
-    .maybeSingle();
-  if (error) throw new Error(`data_plane_registry_read_failed: ${error.message}`);
-  if (!data || data.organization_id !== organizationId) {
-    throw new Error("data_plane_not_registered");
-  }
+  const data = await readDataPlaneRow(organizationId, admin);
   if (data.status !== READY) {
     throw new Error(`data_plane_not_ready:${data.status}`);
   }
 
-  const pool = new Pool({
-    connectionString: connectionUri(data),
-    max: 5,
-    idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 5_000,
-    application_name: `deskcomm:${organizationId}`,
-  });
-  pool.on("error", () => {
-    // Pool errors must not crash the Next process. The next request will
-    // recreate the pool after invalidation or use the existing healthy pool.
-  });
+  const pool = createOrganizationPool(organizationId, data);
   pools.set(organizationId, pool);
   return pool;
+}
+
+/**
+ * Performs the activation gate for a dedicated database.
+ *
+ * A registry row is never marked ready merely because an URI was submitted:
+ * the server must open the database successfully first. The caller is
+ * responsible for applying the pinned schema/migrations before invoking this
+ * function. On any failure the temporary pool is closed and the row remains
+ * non-ready, so application traffic cannot be routed to a partial database.
+ */
+export async function verifyAndPromoteOrganizationDataPlane(
+  organizationId: string,
+  admin: SupabaseClient = createAdminClient(),
+): Promise<{ organizationId: string; schemaVersion: number; healthcheckedAt: string }> {
+  const row = await readDataPlaneRow(organizationId, admin);
+  if (row.status === "retiring") {
+    throw new Error("data_plane_retiring");
+  }
+
+  const pool = createOrganizationPool(organizationId, row);
+  const healthcheckedAt = new Date().toISOString();
+  try {
+    await pool.query("select 1");
+    const { error } = await registry(admin)
+      .from("organization_data_planes")
+      .update({
+        status: READY,
+        last_healthcheck_at: healthcheckedAt,
+        last_error_code: null,
+      })
+      .eq("organization_id", organizationId);
+    if (error) throw new Error(`data_plane_registry_write_failed: ${error.message}`);
+    pools.set(organizationId, pool);
+    return {
+      organizationId,
+      schemaVersion: row.schema_version,
+      healthcheckedAt,
+    };
+  } catch (error) {
+    await pool.end();
+    throw error;
+  }
 }
 
 export function invalidateOrganizationDataPlane(organizationId: string): void {
