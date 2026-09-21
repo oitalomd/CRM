@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { Pool } from "pg";
 
 import {
+  assertDataPlaneCompatibility,
   DATA_PLANE_SCHEMA_VERSION,
   ensureDataPlaneSchema,
 } from "@/lib/tenancy/data-plane-schema";
@@ -25,6 +26,7 @@ async function main() {
   });
 
   try {
+    await assertDataPlaneCompatibility(pool);
     const result = await ensureDataPlaneSchema(pool, {
       sql,
       version: DATA_PLANE_SCHEMA_VERSION,
