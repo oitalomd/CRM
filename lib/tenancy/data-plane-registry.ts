@@ -1,5 +1,5 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
 import { Pool } from "pg";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 import { byteaToBuffer, decryptKey, encryptKey, bufToBytea } from "@/lib/crypto/aes_gcm";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -16,6 +16,12 @@ interface DataPlaneRow {
   connection_uri_iv: unknown;
   connection_uri_tag: unknown;
   schema_version: number;
+  api_url_encrypted?: unknown;
+  api_url_iv?: unknown;
+  api_url_tag?: unknown;
+  api_key_encrypted?: unknown;
+  api_key_iv?: unknown;
+  api_key_tag?: unknown;
 }
 
 interface RegistryClient {
@@ -61,7 +67,7 @@ async function readDataPlaneRow(
   const { data, error } = await registry(admin)
     .from("organization_data_planes")
     .select(
-      "organization_id,status,connection_uri_encrypted,connection_uri_iv,connection_uri_tag,schema_version",
+      "organization_id,status,connection_uri_encrypted,connection_uri_iv,connection_uri_tag,schema_version,api_url_encrypted,api_url_iv,api_url_tag,api_key_encrypted,api_key_iv,api_key_tag",
     )
     .eq("organization_id", organizationId)
     .maybeSingle();
@@ -95,11 +101,15 @@ function createOrganizationPool(organizationId: string, row: DataPlaneRow): Pool
 export async function registerOrganizationDataPlane(input: {
   organizationId: string;
   connectionUri: string;
+  apiUrl?: string;
+  apiKey?: string;
   status?: Exclude<DataPlaneStatus, "retiring">;
   schemaVersion?: number;
   admin?: SupabaseClient;
 }): Promise<void> {
   const encrypted = encryptKey(input.connectionUri);
+  const apiUrl = input.apiUrl ? encryptKey(input.apiUrl) : null;
+  const apiKey = input.apiKey ? encryptKey(input.apiKey) : null;
   const { error } = await registry(input.admin ?? createAdminClient())
     .from("organization_data_planes")
     .upsert(
@@ -111,6 +121,12 @@ export async function registerOrganizationDataPlane(input: {
         connection_uri_tag: bufToBytea(encrypted.tag),
         connection_uri_last4: encrypted.last4,
         schema_version: input.schemaVersion ?? 0,
+        api_url_encrypted: apiUrl ? bufToBytea(apiUrl.ciphertext) : null,
+        api_url_iv: apiUrl ? bufToBytea(apiUrl.iv) : null,
+        api_url_tag: apiUrl ? bufToBytea(apiUrl.tag) : null,
+        api_key_encrypted: apiKey ? bufToBytea(apiKey.ciphertext) : null,
+        api_key_iv: apiKey ? bufToBytea(apiKey.iv) : null,
+        api_key_tag: apiKey ? bufToBytea(apiKey.tag) : null,
       },
       { onConflict: "organization_id" },
     );
@@ -118,6 +134,53 @@ export async function registerOrganizationDataPlane(input: {
 
   // A replaced URI must not leave a pool using the old database.
   invalidateOrganizationDataPlane(input.organizationId);
+}
+
+function dataPlaneApiCredentials(row: DataPlaneRow): { url: string; key: string } {
+  if (!row.api_url_encrypted || !row.api_url_iv || !row.api_url_tag ||
+      !row.api_key_encrypted || !row.api_key_iv || !row.api_key_tag) {
+    throw new Error("data_plane_api_credentials_missing");
+  }
+  return {
+    url: decryptKey({
+      ciphertext: byteaToBuffer(row.api_url_encrypted),
+      iv: byteaToBuffer(row.api_url_iv),
+      tag: byteaToBuffer(row.api_url_tag),
+    }),
+    key: decryptKey({
+      ciphertext: byteaToBuffer(row.api_key_encrypted),
+      iv: byteaToBuffer(row.api_key_iv),
+      tag: byteaToBuffer(row.api_key_tag),
+    }),
+  };
+}
+
+export async function getOrganizationDataPlaneClient(
+  organizationId: string,
+  admin: SupabaseClient = createAdminClient(),
+): Promise<SupabaseClient> {
+  const row = await readDataPlaneRow(organizationId, admin);
+  if (row.status !== READY) throw new Error(`data_plane_not_ready:${row.status}`);
+  const credentials = dataPlaneApiCredentials(row);
+  return createClient(credentials.url, credentials.key, {
+    auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
+    global: { headers: { "X-Client-Info": `deskcomm:${organizationId}/data-plane` } },
+  });
+}
+
+/** Shared-to-dedicated compatibility bridge for a single tenant request. */
+export async function getTenantDataClient(
+  organizationId: string,
+  shared: SupabaseClient,
+): Promise<SupabaseClient> {
+  try {
+    return await getOrganizationDataPlaneClient(organizationId);
+  } catch (error) {
+    if (error instanceof Error && error.message === "data_plane_not_registered") {
+      return shared;
+    }
+    throw error;
+  }
 }
 
 /**
