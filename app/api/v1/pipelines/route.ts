@@ -8,6 +8,7 @@ import { requireSupportWrite } from "@/lib/impersonate/support";
  */
 import { randomUUID } from "node:crypto";
 import { type NextRequest } from "next/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
 import { ok, fail } from "@/lib/api/wrappers";
@@ -21,6 +22,7 @@ import {
   type FunilEditavel,
 } from "@/lib/pipelines/pipeline-editing";
 import { createClient } from "@/lib/supabase/server";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { conflitoDoBanco, corpo, lerFunis } from "./_funis";
 import { listPipelinesHandler } from "./_handler";
 import { traduzir } from "@/lib/i18n/dicionario";
@@ -33,7 +35,15 @@ export async function GET(): Promise<Response> {
   if (!authz.ok) return authz.response;
   const t = (texto: string) => traduzir(texto, authz.user.idioma);
 
-  const supabase = await createClient();
+  const shared = await createClient();
+  let supabase: SupabaseClient;
+  try {
+    supabase = await getTenantDataClient(authz.org.orgId, shared);
+  } catch {
+    return fail("data_plane_unavailable", t("O banco da organização está indisponível."), 503, {
+      requestId,
+    });
+  }
   try {
     const { pipelines } = await listPipelinesHandler(supabase, {
       organization_id: authz.org.orgId,
@@ -95,7 +105,15 @@ export async function POST(req: NextRequest): Promise<Response> {
   const name = parsed.data.name.trim();
   const description = parsed.data.description?.trim() || null;
 
-  const supabase = await createClient();
+  const shared = await createClient();
+  let supabase: SupabaseClient;
+  try {
+    supabase = await getTenantDataClient(orgId, shared);
+  } catch {
+    return fail("data_plane_unavailable", t("O banco da organização está indisponível."), 503, {
+      requestId,
+    });
+  }
 
   let funis: FunilEditavel[];
   try {
@@ -181,3 +199,4 @@ export async function POST(req: NextRequest): Promise<Response> {
     return fail("internal_error", (err as Error).message, 500, { requestId });
   }
 }
+
