@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { getOrganizationDataPlanePool } from "./data-plane-registry";
+import { getOrganizationDataPlanePool, getTenantDataClient } from "./data-plane-registry";
 
 function adminReturning(row: unknown, error: { message: string } | null = null) {
   return {
@@ -48,6 +48,27 @@ describe("data-plane registry", () => {
         adminReturning(null, { message: "permission denied" }),
       ),
     ).rejects.toThrow("data_plane_registry_read_failed: permission denied");
+  });
+
+  it("mantém o cliente compartilhado somente quando não há registro", async () => {
+    const shared = adminReturning(null);
+    await expect(getTenantDataClient("org-sem-banco", shared)).resolves.toBe(shared);
+  });
+
+  it("não cria cliente Supabase com credenciais ausentes", async () => {
+    await expect(
+      getTenantDataClient(
+        "org-sem-api",
+        adminReturning({
+          organization_id: "org-sem-api",
+          status: "ready",
+          schema_version: 381,
+          connection_uri_encrypted: "x",
+          connection_uri_iv: "x",
+          connection_uri_tag: "x",
+        }),
+      ),
+    ).rejects.toThrow("data_plane_api_credentials_missing");
   });
 });
 
