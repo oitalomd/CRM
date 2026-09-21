@@ -174,7 +174,7 @@ export async function getTenantDataClient(
   shared: SupabaseClient,
 ): Promise<SupabaseClient> {
   try {
-    return await getOrganizationDataPlaneClient(organizationId);
+    return await getOrganizationDataPlaneClient(organizationId, shared);
   } catch (error) {
     if (error instanceof Error && error.message === "data_plane_not_registered") {
       return shared;
