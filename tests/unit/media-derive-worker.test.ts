@@ -70,6 +70,9 @@ vi.mock("@/lib/supabase/admin", () => ({
     storage: { from: () => ({ download: downloadMock }) },
   }),
 }));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({
+  getTenantDataClient: vi.fn(async (_organizationId: string, admin: unknown) => admin),
+}));
 
 vi.mock("@/lib/messaging/media/derive", () => ({
   deriveMediaText: vi.fn(async () => "transcrição do áudio real"),
@@ -240,3 +243,4 @@ describe("deriveMessageMedia", () => {
     });
   });
 });
+
