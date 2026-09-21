@@ -70,3 +70,53 @@ export async function listDedicatedConversations(input: {
   }));
 }
 
+export async function getDedicatedConversation(input: {
+  pool: Pool;
+  tenantId: string;
+  conversationId: string;
+}) {
+  const conversationResult = await input.pool.query<Record<string, unknown>>(
+    `select id, organization_id, contact_id, channel, status,
+            assigned_to_user_id, last_inbound_at, last_message_at,
+            last_message_preview, unread_count_for_assignee, created_at, updated_at
+       from public.conversations
+      where id = $1 and organization_id = $2
+      limit 1`,
+    [input.conversationId, input.tenantId],
+  );
+  const conversation = conversationResult.rows[0];
+  if (!conversation) return null;
+
+  const [organizationResult, contactResult, messagesResult] = await Promise.all([
+    input.pool.query<Record<string, unknown>>(
+      `select id, display_name, slug, status
+         from public.organizations where id = $1 limit 1`,
+      [input.tenantId],
+    ),
+    conversation.contact_id
+      ? input.pool.query<Record<string, unknown>>(
+          `select id, name, phone_number, email, is_anonymized, is_blocked
+             from public.contacts where id = $1 and organization_id = $2 limit 1`,
+          [conversation.contact_id, input.tenantId],
+        )
+      : Promise.resolve({ rows: [] as Array<Record<string, unknown>> }),
+    input.pool.query<Record<string, unknown>>(
+      `select id, conversation_id, organization_id, direction, type, status,
+              body, media_url, media_mime, sent_via, sent_at, read_at,
+              delivered_at, error_code, error_message, ack, sent_by_user_id, created_at
+         from public.messages
+        where conversation_id = $1 and organization_id = $2
+        order by created_at desc
+        limit 50`,
+      [input.conversationId, input.tenantId],
+    ),
+  ]);
+
+  return {
+    conversation,
+    organization: organizationResult.rows[0] ?? null,
+    contact: contactResult.rows[0] ?? null,
+    messages: messagesResult.rows,
+  };
+}
+
