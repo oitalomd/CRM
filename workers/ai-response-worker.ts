@@ -54,6 +54,7 @@ import type { EventRow } from "@/lib/event-log/dispatcher";
 import { resolverModeloDoPonto } from "@/lib/ai/gateway-binding";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 const RECENT_MESSAGES_LIMIT = 20;
 const RAG_TOP_K = 5;
@@ -63,6 +64,10 @@ const RAG_TOP_K = 5;
 const RAG_THRESHOLD = 0.4;
 const WINDOW_24H_MS = 24 * 60 * 60 * 1000;
 const HANDOFF_RECENT_GUARD_MS = 5_000;
+
+async function getWorkerDataClient(organizationId: string) {
+  return getTenantDataClient(organizationId, createAdminClient());
+}
 
 export interface ProcessResult {
   status: "sent_to_dispatch" | "skipped" | "error";
@@ -99,11 +104,8 @@ export async function processMessageReceived(row: EventRow): Promise<ProcessResu
   }
 
   const ctx = decision.context;
-  const boundary = await serviceFromMessage(
-    createAdminClient(),
-    ctx.organization_id,
-    ctx.message_id,
-  );
+  const tenantAdmin = await getWorkerDataClient(ctx.organization_id);
+  const boundary = await serviceFromMessage(tenantAdmin, ctx.organization_id, ctx.message_id);
   if (
     !boundary ||
     boundary.contact_id !== ctx.contact_id ||
@@ -111,7 +113,7 @@ export async function processMessageReceived(row: EventRow): Promise<ProcessResu
   )
     return { status: "skipped", reason: "service_boundary_stale" };
   try {
-    await assertServiceBoundarySupabase(createAdminClient(), boundary);
+    await assertServiceBoundarySupabase(tenantAdmin, boundary);
   } catch {
     return { status: "skipped", reason: "service_boundary_stale" };
   }
@@ -415,7 +417,7 @@ async function vetoPorTetoDeGasto(alvo: {
   // a consulta do aviso chega a sair.
   if (status.enforcement_mode === "off") return null;
 
-  const admin = createAdminClient();
+  const admin = await getWorkerDataClient(orgId);
   // "Neste mês", e não "aberto": fechar o aviso à mão não pode virar bypass
   // permanente do bloqueio — é a mesma régua da CTE `avisado_antes`.
   //
@@ -607,7 +609,7 @@ interface BuildContextInput {
 }
 
 async function buildContext(input: BuildContextInput): Promise<GuardDecision> {
-  const admin = createAdminClient();
+  const admin = await getWorkerDataClient(input.organizationId);
 
   // Conversation + contact + agent in 2 round trips. Service-role bypasses RLS,
   // so org filter is mandatory on every where-clause.
@@ -863,7 +865,7 @@ function skip(reason: SkipDecision["reason"], detail?: string): SkipDecision {
  */
 async function resolveLeadId(organizationId: string, contactId: string): Promise<string | null> {
   try {
-    const admin = createAdminClient();
+    const admin = await getWorkerDataClient(organizationId);
     const { data } = await admin
       .from("crm_leads")
       .select("id, organization_id, contact_id, created_at")
@@ -899,7 +901,7 @@ interface RetrieveInput {
  * agente default), agora por escrito.
  */
 async function retrieveContext(input: RetrieveInput): Promise<RagHit[]> {
-  const admin = createAdminClient();
+  const admin = await getWorkerDataClient(input.organizationId);
 
   const { data: fontesRows } = await admin
     .from("ai_knowledge_sources")
@@ -1064,7 +1066,7 @@ async function persistAndDispatch(
   finalText: string,
   options: PersistOptions = {},
 ): Promise<{ outbound_message_id: string }> {
-  const admin = createAdminClient();
+  const admin = await getWorkerDataClient(ctx.organization_id);
 
   const insertRow = {
     organization_id: ctx.organization_id,
@@ -1159,3 +1161,4 @@ async function persistAndDispatch(
 
   return { outbound_message_id: inserted.id };
 }
+
