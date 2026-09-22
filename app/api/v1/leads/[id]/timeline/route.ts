@@ -35,9 +35,11 @@ import { randomUUID } from "node:crypto";
 import { type NextRequest } from "next/server";
 
 import { ok, fail } from "@/lib/api/wrappers";
-import { loadAuthUser } from "@/lib/auth/server";
+import { loadAuthUser, resolveActiveOrg } from "@/lib/auth/server";
 import { traduzir } from "@/lib/i18n/dicionario";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import {
   TIMELINE_COLS,
   comNomeDoAtor,
@@ -57,16 +59,25 @@ export async function GET(req: NextRequest, ctx: RouteCtx): Promise<Response> {
   const requestId = randomUUID();
   const { id: leadId } = await ctx.params;
 
-  const supabase = await createClient();
+  const sessionClient = await createClient();
   const {
     data: { user },
     error: authErr,
-  } = await supabase.auth.getUser();
+  } = await sessionClient.auth.getUser();
   if (authErr || !user) {
     return fail("unauthenticated", "Auth required.", 401, { requestId });
   }
   const authUser = await loadAuthUser();
   const t = (texto: string) => traduzir(texto, authUser?.idioma ?? "pt-BR");
+  const activeOrg = authUser ? await resolveActiveOrg(authUser) : null;
+  const organizationId = activeOrg?.orgId;
+  if (!organizationId) return fail("forbidden", t("Organização ativa não encontrada."), 403, { requestId });
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(organizationId, createAdminClient());
+  } catch (err) {
+    return fail("tenant_data_plane_unavailable", err instanceof Error ? err.message : "Tenant data plane unavailable.", 503, { requestId });
+  }
 
   const url = new URL(req.url);
   const types = url.searchParams.getAll("type").filter(Boolean);
@@ -126,3 +137,4 @@ export async function GET(req: NextRequest, ctx: RouteCtx): Promise<Response> {
     },
   });
 }
+
