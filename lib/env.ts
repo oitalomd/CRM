@@ -71,6 +71,13 @@ const schema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: requiredAlways("SUPABASE_SERVICE_ROLE_KEY"),
   SUPABASE_SECRET_KEY: z.string().optional().default(""),
 
+  /**
+   * Rollout gate: quando true, um tenant sem data plane dedicado não pode
+   * continuar silenciosamente no banco compartilhado. O padrão permanece
+   * false durante a migração gradual; a promoção final deve ligar a chave.
+   */
+  TENANCY_REQUIRE_DEDICATED: z.string().optional().default("false"),
+
   // Cron / interno
   INTERNAL_SECRET: required("INTERNAL_SECRET"),
   /** Optional dedicated secret for cron endpoints (S-06.07 onwards). */
