@@ -4,9 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GET } from "@/app/api/v1/agenda/vinculos/route";
 import { VinculoDaMarcacao } from "@/components/agenda/VinculoDaMarcacao";
 
-const deps = vi.hoisted(() => ({ role: vi.fn(), from: vi.fn() }));
+const deps = vi.hoisted(() => ({ role: vi.fn(), from: vi.fn(), admin: vi.fn(), tenantData: vi.fn() }));
 vi.mock("@/lib/auth/require-role", () => ({ requireRole: deps.role }));
 vi.mock("@/lib/supabase/server", () => ({ createClient: async () => ({ from: deps.from }) }));
+vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: deps.admin }));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({ getTenantDataClient: deps.tenantData }));
 vi.mock("@/hooks/i18n/useT", () => ({ useT: () => (s: string) => s }));
 vi.mock("@/components/contacts/NewContactDialog", () => ({ NewContactDialog: () => null }));
 vi.mock("@/lib/api/client", () => ({
@@ -82,6 +84,9 @@ beforeEach(() => {
   ];
   deps.role.mockResolvedValue({ ok: true, org: { orgId: "org-a" } });
   deps.from.mockImplementation(consulta);
+  const client = { from: deps.from };
+  deps.admin.mockReturnValue(client);
+  deps.tenantData.mockResolvedValue(client);
 });
 async function buscar(params: Record<string, string> = {}) {
   const resposta = await GET(
@@ -161,3 +166,4 @@ describe("contatos da Agenda pelo nome exibido", () => {
     qc.clear();
   });
 });
+
