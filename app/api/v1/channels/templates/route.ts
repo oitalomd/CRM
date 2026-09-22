@@ -181,6 +181,7 @@ export async function POST(_req: NextRequest): Promise<NextResponse> {
 
   try {
     const counts = await syncTemplates({
+      db: dataClient,
       organizationId: r.orgId,
       wabaId: sessao.wabaId,
       token: creds.token,
