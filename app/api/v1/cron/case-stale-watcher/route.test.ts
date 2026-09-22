@@ -13,6 +13,9 @@ import { NextRequest } from "next/server";
 vi.mock("@/lib/env", () => ({ env: { INTERNAL_SECRET: "segredo", INTERNAL_CRON_SECRET: "" } }));
 vi.mock("@/lib/audit", () => ({ audit: vi.fn(async () => undefined) }));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({
+  getTenantDataClient: vi.fn(async (_organizationId: string, controlPlane: unknown) => controlPlane),
+}));
 
 import { audit } from "@/lib/audit";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -29,6 +32,9 @@ interface Capturado {
 function admin(casos: Array<Record<string, unknown>>, jaTemAviso: boolean, cap: Capturado) {
   return {
     from(tabela: string) {
+      if (tabela === "organizations") {
+        return { select: async () => ({ data: [{ id: ORG }], error: null }) };
+      }
       if (tabela === "agent_cases") {
         return {
           select: () => {
@@ -214,3 +220,4 @@ describe("case-stale-watcher", () => {
     expect(createAdminClient).not.toHaveBeenCalled();
   });
 });
+
