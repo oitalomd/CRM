@@ -22,6 +22,7 @@ import { audit } from "@/lib/audit";
 import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -59,61 +60,92 @@ async function handle(req: NextRequest): Promise<Response> {
   const ano = agora.getUTCFullYear();
   const mes = agora.getUTCMonth() + 1;
 
-  const { data: moldes, error } = await admin
-    .from("recurring_entries")
-    .select(
-      "id, organization_id, account_id, account_plan_id, direction, amount_cents, currency, name, day_of_month",
-    )
-    .eq("is_active", true);
-
-  if (error) {
-    logger.error("[recurring-entries] consulta falhou", { error: error.message, requestId });
-    return fail("internal_error", "Falha ao buscar recorrências.", 500, { requestId });
+  const { data: organizations, error: organizationsError } = await admin
+    .from("organizations")
+    .select("id");
+  if (organizationsError) {
+    logger.error("[recurring-entries] falha ao listar organizações", {
+      error: organizationsError.message,
+      requestId,
+    });
+    return fail("internal_error", "Falha ao buscar organizações.", 500, { requestId });
   }
 
   let gerados = 0;
   let jaExistiam = 0;
   let falharam = 0;
+  let moldesExaminados = 0;
 
-  for (const molde of moldes ?? []) {
-    const competencia = competenciaDoMes(ano, mes, molde.day_of_month as number);
-
-    // Só gera quando a data já chegou. Sem isto, no dia 1 nasceriam as doze
-    // contas do mês inteiro e a tela de pendências viraria uma lista de coisas
-    // que ainda não venceram.
-    if (competencia > agora.toISOString().slice(0, 10)) continue;
-
-    const { error: erroInsert } = await admin.from("financial_entries").insert({
-      organization_id: molde.organization_id,
-      account_id: molde.account_id,
-      account_plan_id: molde.account_plan_id,
-      direction: molde.direction,
-      amount_cents: molde.amount_cents,
-      currency: molde.currency,
-      description: molde.name,
-      entry_date: competencia,
-      status: "pending",
-      origin: "recurring",
-      recurring_entry_id: molde.id,
-    });
-
-    if (!erroInsert) {
-      gerados += 1;
+  for (const organization of organizations ?? []) {
+    let dataClient: ReturnType<typeof createAdminClient>;
+    try {
+      dataClient = await getTenantDataClient(organization.id, admin);
+    } catch (err) {
+      logger.warn("[recurring-entries] data plane indisponível; organização ignorada", {
+        organizationId: organization.id,
+        error: err instanceof Error ? err.message : String(err),
+        requestId,
+      });
       continue;
     }
-    // 23505 = o índice único pegou. É o desfecho esperado em toda rodada depois
-    // da primeira do mês, e não é erro.
-    if (erroInsert.code === "23505") {
-      jaExistiam += 1;
+
+    const { data: moldes, error } = await dataClient
+      .from("recurring_entries")
+      .select(
+        "id, organization_id, account_id, account_plan_id, direction, amount_cents, currency, name, day_of_month",
+      )
+      .eq("organization_id", organization.id)
+      .eq("is_active", true);
+    if (error) {
+      logger.error("[recurring-entries] consulta por organização falhou", {
+        organizationId: organization.id,
+        error: error.message,
+        requestId,
+      });
       continue;
     }
-    falharam += 1;
-    logger.error("[recurring-entries] insert falhou", {
-      recurring_entry_id: molde.id,
-      organization_id: molde.organization_id,
-      error: erroInsert.message,
-      requestId,
-    });
+
+    moldesExaminados += moldes?.length ?? 0;
+    for (const molde of moldes ?? []) {
+      const competencia = competenciaDoMes(ano, mes, molde.day_of_month as number);
+
+      // Só gera quando a data já chegou. Sem isto, no dia 1 nasceriam as doze
+      // contas do mês inteiro e a tela de pendências viraria uma lista de coisas
+      // que ainda não venceram.
+      if (competencia > agora.toISOString().slice(0, 10)) continue;
+
+      const { error: erroInsert } = await dataClient.from("financial_entries").insert({
+        organization_id: molde.organization_id,
+        account_id: molde.account_id,
+        account_plan_id: molde.account_plan_id,
+        direction: molde.direction,
+        amount_cents: molde.amount_cents,
+        currency: molde.currency,
+        description: molde.name,
+        entry_date: competencia,
+        status: "pending",
+        origin: "recurring",
+        recurring_entry_id: molde.id,
+      });
+
+      if (!erroInsert) {
+        gerados += 1;
+        continue;
+      }
+      // 23505 = o índice único pegou. É o desfecho esperado em toda rodada depois
+      // da primeira do mês, e não é erro.
+      if (erroInsert.code === "23505") {
+        jaExistiam += 1;
+        continue;
+      }
+      falharam += 1;
+      logger.error("[recurring-entries] insert falhou", {
+        recurring_entry_id: molde.id,
+        organization_id: molde.organization_id,
+        error: erroInsert.message,
+        requestId,
+      });
+    }
   }
 
   // Rodada que não gerou nada NÃO é mutação, e não audita — a lei está no
@@ -129,10 +161,11 @@ async function handle(req: NextRequest): Promise<Response> {
   }
 
   return ok(
-    { moldes: (moldes ?? []).length, gerados, ja_existiam: jaExistiam, falharam },
+    { moldes: moldesExaminados, gerados, ja_existiam: jaExistiam, falharam },
     { requestId },
   );
 }
 
 export const GET = handle;
 export const POST = handle;
+
