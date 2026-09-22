@@ -6,6 +6,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 import { byteaToBuffer, decryptKey, encryptKey, bufToBytea } from "@/lib/crypto/aes_gcm";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { syncOrganizationDataPlaneIdentities } from "./data-plane-identity";
 import {
   assertDataPlaneCompatibility,
   DATA_PLANE_SCHEMA_NAME,
@@ -263,6 +264,13 @@ export async function verifyAndPromoteOrganizationDataPlane(
     const schemaVersion = Number(schema.rows[0]?.schema_version);
     if (schemaVersion !== DATA_PLANE_SCHEMA_VERSION) {
       throw new Error(`data_plane_schema_version_mismatch:${schemaVersion || "missing"}`);
+    }
+    if ((row.data_plane_provider ?? "supabase") === "postgresql") {
+      await syncOrganizationDataPlaneIdentities({
+        organizationId,
+        pool,
+        controlPlane: admin,
+      });
     }
     const { error } = await registry(admin)
       .from("organization_data_planes")
