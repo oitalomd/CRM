@@ -16,7 +16,8 @@ import { ApiError } from "@/lib/api/types";
 import { ok, fail } from "@/lib/api/wrappers";
 import { requireRole } from "@/lib/auth/require-role";
 import { moveLeadSchema, validateRequest } from "@/lib/schemas";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { emitLeadActivity, stageChangeReason } from "@/lib/leads/activity-emitter";
 import { registraFalhaDeAtividade } from "@/lib/leads/activity-write-failure";
 import {
@@ -38,12 +39,18 @@ export async function POST(
   const requestId = randomUUID();
   const { id: leadId } = await ctx.params;
 
-  const supabase = await createClient();
   // spec 13 §4: escrita é agent+ (viewer é read-only).
   const authz = await requireRole("agent", { requestId, resource: "crm_leads" });
   if (!authz.ok) return authz.response;
   const t = (texto: string) => traduzir(texto, authz.user.idioma);
   const user = authz.user;
+
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(authz.org.orgId, createAdminClient());
+  } catch (err) {
+    return fail("tenant_data_plane_unavailable", err instanceof Error ? err.message : "Tenant data plane unavailable.", 503, { requestId });
+  }
 
   let input;
   try {
@@ -239,3 +246,4 @@ export async function POST(
 
   return ok(finalLead, { requestId });
 }
+
