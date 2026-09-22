@@ -257,7 +257,9 @@ export async function verifyAndPromoteOrganizationDataPlane(
       .from("organization_data_planes")
       .update({
         status: READY,
+        schema_version: DATA_PLANE_SCHEMA_VERSION,
         last_healthcheck_at: healthcheckedAt,
+        last_migration_at: healthcheckedAt,
         last_error_code: null,
       })
       .eq("organization_id", organizationId);
