@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { assertDataPlaneCompatibility, ensureDataPlaneSchema } from "./data-plane-schema";
+import {
+  assertDataPlaneCompatibility,
+  ensureDataPlaneSchema,
+  preparePostgresqlDataPlane,
+} from "./data-plane-schema";
 
 function fakePool(rows: Array<Record<string, unknown>>) {
   const calls: string[] = [];
@@ -45,6 +49,20 @@ describe("data-plane schema runner", () => {
     await expect(assertDataPlaneCompatibility(pool, "postgresql")).rejects.toThrow(
       "data_plane_database_incompatible:postgresql:public.deskcomm_operational_contract",
     );
+  });
+
+  it("prepara o PostgreSQL com os contratos versionados do data plane", async () => {
+    const queries: string[] = [];
+    await preparePostgresqlDataPlane({
+      query: async (sql: string) => {
+        queries.push(sql);
+        return { rows: [], rowCount: 0 };
+      },
+    });
+
+    expect(queries).toHaveLength(2);
+    expect(queries[0]).toContain("selfhost-prelude.sql");
+    expect(queries[1]).toContain("deskcomm_operational_contract");
   });
 
   it("inicializa e registra a versão dentro da transação", async () => {
