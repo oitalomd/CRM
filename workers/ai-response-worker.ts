@@ -125,6 +125,7 @@ export async function processMessageReceived(row: EventRow): Promise<ProcessResu
 
   if (checkG1(ctx.inbound_body)) {
     await triggerHandoff({
+      admin: tenantAdmin,
       conversationId: ctx.conversation_id,
       serviceBoundary: ctx.serviceBoundary,
       organizationId: ctx.organization_id,
@@ -138,6 +139,7 @@ export async function processMessageReceived(row: EventRow): Promise<ProcessResu
 
   if (checkG4Legal(ctx.inbound_body)) {
     await triggerHandoff({
+      admin: tenantAdmin,
       conversationId: ctx.conversation_id,
       serviceBoundary: ctx.serviceBoundary,
       organizationId: ctx.organization_id,
@@ -152,6 +154,7 @@ export async function processMessageReceived(row: EventRow): Promise<ProcessResu
   const stageRequiresHuman = await checkG4Stage(leadId, ctx.organization_id);
   if (stageRequiresHuman) {
     await triggerHandoff({
+      admin: tenantAdmin,
       conversationId: ctx.conversation_id,
       serviceBoundary: ctx.serviceBoundary,
       organizationId: ctx.organization_id,
@@ -267,6 +270,7 @@ export async function processMessageReceived(row: EventRow): Promise<ProcessResu
         handoffReason: "low_confidence",
       });
       await triggerHandoff({
+        admin: tenantAdmin,
         conversationId: ctx.conversation_id,
         serviceBoundary: ctx.serviceBoundary,
         organizationId: ctx.organization_id,
@@ -507,6 +511,7 @@ async function vetoPorTetoDeGasto(alvo: {
   // Nunca lança (contrato do orquestrador), então uma falha aqui não impede a
   // recusa — mas ela é logada lá dentro.
   await triggerHandoff({
+    admin,
     conversationId: alvo.conversationId,
     serviceBoundary: alvo.serviceBoundary,
     organizationId: orgId,
