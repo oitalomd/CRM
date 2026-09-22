@@ -177,6 +177,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       // duplicamos a regra: regra copiada envelhece separado da fonte.
       await adapter.templates.create({
         organizationId: r.ctx.orgId,
+        dataClient: r.ctx.db,
         sessionRef: r.ctx.sessionRef,
         draft: {
           name: corpo.name,
@@ -200,6 +201,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     // isso ele criaria a mesma de novo, achando que não salvou.
     const remotas = await adapter.templates.list({
       organizationId: r.ctx.orgId,
+      dataClient: r.ctx.db,
       sessionRef: r.ctx.sessionRef,
     });
     const agora = new Date().toISOString();
