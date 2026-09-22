@@ -6,11 +6,14 @@ const h = vi.hoisted(() => ({
   support: vi.fn(),
   request: vi.fn(),
   audit: vi.fn(),
+  tenantData: vi.fn(),
 }));
 vi.mock("@/lib/auth/require-role", () => ({ requireRole: h.role }));
 vi.mock("@/lib/auth/server", () => ({ mfaEmDivida: h.mfa }));
 vi.mock("@/lib/impersonate/support", () => ({ requireSupportWrite: h.support }));
 vi.mock("@/lib/supabase/server", () => ({ createClient: async () => ({}) }));
+vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: () => ({}) }));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({ getTenantDataClient: h.tenantData }));
 vi.mock("@/lib/audit", () => ({ audit: h.audit }));
 vi.mock("@/lib/channels/pairing-code", async (original) => ({
   ...(await original<typeof PairingModule>()),
@@ -34,6 +37,7 @@ beforeEach(() => {
   h.mfa.mockResolvedValue(false);
   h.support.mockResolvedValue(null);
   h.request.mockResolvedValue({ code: "ABCD-1234" });
+  h.tenantData.mockResolvedValue({});
 });
 it("requires admin, uses trusted org, returns no-store and audits without phone or code", async () => {
   const response = await call();
@@ -74,3 +78,4 @@ it("returns Retry-After on rate limit and does not audit a failed request", asyn
   expect(response.headers.get("retry-after")).toBe("30");
   expect(h.audit).not.toHaveBeenCalled();
 });
+
