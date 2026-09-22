@@ -142,7 +142,7 @@ export const metaCloudAdapter: ChannelAdapter = {
   async checkHealth(
     input: ChannelTenantScope & { sessionRef: string },
   ): Promise<ChannelHealth> {
-    const creds = await resolveMetaCreds(createAdminClient(), {
+    const creds = await resolveMetaCreds(input.dataClient ?? createAdminClient(), {
       organizationId: input.organizationId,
       phoneNumberId: input.sessionRef,
     });
@@ -186,7 +186,7 @@ export const metaCloudAdapter: ChannelAdapter = {
   },
 
   async fetchInboundMedia(input): Promise<{ buffer: Buffer; mime: string }> {
-    const creds = await resolveMetaCreds(createAdminClient(), {
+    const creds = await resolveMetaCreds(input.dataClient ?? createAdminClient(), {
       organizationId: input.organizationId,
       phoneNumberId: input.sessionRef,
     });
@@ -266,7 +266,7 @@ export const metaCloudAdapter: ChannelAdapter = {
   async send(envelope: OutboundEnvelope): Promise<{ externalId: string | null }> {
     // Sessão primeiro, env como fallback. O `sessionRef` do canal oficial É o
     // `phone_number_id` (ver `resolveSessionRef`), então ele é a chave da busca.
-    const creds = await resolveMetaCreds(createAdminClient(), {
+    const creds = await resolveMetaCreds(envelope.dataClient ?? createAdminClient(), {
       organizationId: envelope.organizationId,
       phoneNumberId: envelope.sessionRef,
     });
@@ -319,3 +319,4 @@ export const metaCloudAdapter: ChannelAdapter = {
     return { externalId: body.messages?.[0]?.id ?? null };
   },
 };
+
