@@ -1,9 +1,17 @@
 import { Pool } from "pg";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 import { byteaToBuffer, decryptKey, encryptKey, bufToBytea } from "@/lib/crypto/aes_gcm";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { DATA_PLANE_SCHEMA_NAME, DATA_PLANE_SCHEMA_VERSION } from "./data-plane-schema";
+import {
+  assertDataPlaneCompatibility,
+  DATA_PLANE_SCHEMA_NAME,
+  DATA_PLANE_SCHEMA_VERSION,
+  ensureDataPlaneSchema,
+} from "./data-plane-schema";
 
 const READY = "ready" as const;
 
@@ -208,10 +216,10 @@ export async function getOrganizationDataPlanePool(
  * Performs the activation gate for a dedicated database.
  *
  * A registry row is never marked ready merely because an URI was submitted:
- * the server must open the database successfully first. The caller is
- * responsible for applying the pinned schema/migrations before invoking this
- * function. On any failure the temporary pool is closed and the row remains
- * non-ready, so application traffic cannot be routed to a partial database.
+ * the server must open the database successfully first. This function applies
+ * the pinned baseline idempotently before the final health check. On any
+ * failure the temporary pool is closed and the row remains non-ready, so
+ * application traffic cannot be routed to a partial database.
  */
 export async function verifyAndPromoteOrganizationDataPlane(
   organizationId: string,
@@ -225,6 +233,18 @@ export async function verifyAndPromoteOrganizationDataPlane(
   const pool = createOrganizationPool(organizationId, row);
   const healthcheckedAt = new Date().toISOString();
   try {
+    // Promotion is the provisioning gate, not a passive health check. Apply
+    // the exact pinned baseline before marking the plane ready; a partial or
+    // manually prepared database must never receive application traffic.
+    await assertDataPlaneCompatibility(pool);
+    const baselinePath = resolve(process.cwd(), "supabase/baseline.sql");
+    const baselineSql = await readFile(baselinePath, "utf8");
+    const baselineHash = createHash("sha256").update(baselineSql, "utf8").digest("hex");
+    await ensureDataPlaneSchema(pool, {
+      sql: baselineSql,
+      version: DATA_PLANE_SCHEMA_VERSION,
+      hash: baselineHash,
+    });
     await pool.query("select 1");
     const schema = await pool.query(
       `select schema_version from public.${DATA_PLANE_SCHEMA_NAME} where singleton = true`,
