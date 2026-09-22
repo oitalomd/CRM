@@ -52,6 +52,29 @@ Só iniciar após o canário aprovado:
 6. observar erros, latência, filas e workers antes de migrar qualquer outra
    organização.
 
+O export/import deve ser executado pelo migrador versionado, sempre começando
+em modo de simulação:
+
+```bash
+SOURCE_DATABASE_URL='(origem)' DATA_PLANE_DATABASE_URL='(destino)' \
+  pnpm tenancy:organization:plan --organization-id '(uuid)'
+```
+
+O plano descobre tabelas tenant-scoped pelo catálogo do PostgreSQL, inclui
+dependentes por chave estrangeira e exibe contagens de origem/destino sem
+escrever. Só depois de revisar o relatório é permitido aplicar:
+
+```bash
+SOURCE_DATABASE_URL='(origem)' DATA_PLANE_DATABASE_URL='(destino)' \
+  pnpm tenancy:organization:plan --organization-id '(uuid)' \
+  --apply --confirm-org '(uuid)'
+```
+
+O comando aborta e faz rollback da transação em qualquer erro; depois da
+transação ele repete as contagens e falha se o destino não alcançou a origem.
+O resultado JSON deve ser guardado como evidência do canário. URLs e segredos
+não são impressos.
+
 O control plane, proxy, Redis, WAHA e a imagem atual permanecem inalterados
 até a validação pública do canário.
 
