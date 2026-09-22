@@ -24,7 +24,9 @@ import type { NextRequest } from "next/server";
 import { ok, fail } from "@/lib/api/wrappers";
 import { requireRole } from "@/lib/auth/require-role";
 import { devolverAtendimentoAoAgente } from "@/lib/escalacao/retomada";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { traduzir } from "@/lib/i18n/dicionario";
 
 export const dynamic = "force-dynamic";
@@ -45,7 +47,22 @@ export async function POST(_req: NextRequest, ctx: RouteCtx): Promise<Response> 
   const t = (texto: string) => traduzir(texto, authz.user.idioma);
   const { user: authUser, org: activeOrg } = authz;
 
-  const supabase = await createClient();
+  const controlPlane = await createClient();
+  const { data: visible, error: visibilityError } = await controlPlane
+    .from("conversations")
+    .select("id")
+    .eq("id", id)
+    .eq("organization_id", activeOrg.orgId)
+    .maybeSingle();
+  if (visibilityError) return fail("internal_error", visibilityError.message, 500, { requestId });
+  if (!visible) return fail("not_found", t("Conversa não encontrada."), 404, { requestId });
+
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(activeOrg.orgId, createAdminClient());
+  } catch (err) {
+    return fail("tenant_data_plane_unavailable", err instanceof Error ? err.message : "Tenant data plane unavailable.", 503, { requestId });
+  }
 
   const resultado = await devolverAtendimentoAoAgente(
     {
@@ -94,3 +111,4 @@ export async function POST(_req: NextRequest, ctx: RouteCtx): Promise<Response> 
     { requestId },
   );
 }
+
