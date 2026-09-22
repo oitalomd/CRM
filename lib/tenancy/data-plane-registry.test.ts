@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { getOrganizationDataPlanePool, getTenantDataClient } from "./data-plane-registry";
 
@@ -19,6 +19,8 @@ function adminReturning(row: unknown, error: { message: string } | null = null) 
 }
 
 describe("data-plane registry", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
   it("falha fechado quando a organização não tem banco registrado", async () => {
     await expect(
       getOrganizationDataPlanePool("org-sem-banco", adminReturning(null)),
@@ -53,6 +55,13 @@ describe("data-plane registry", () => {
   it("mantém o cliente compartilhado somente quando não há registro", async () => {
     const shared = adminReturning(null);
     await expect(getTenantDataClient("org-sem-banco", shared)).resolves.toBe(shared);
+  });
+
+  it("bloqueia o fallback compartilhado no gate final do rollout", async () => {
+    vi.stubEnv("TENANCY_REQUIRE_DEDICATED", "true");
+    await expect(getTenantDataClient("org-sem-banco", adminReturning(null))).rejects.toThrow(
+      "data_plane_required",
+    );
   });
 
   it("não cria cliente Supabase com credenciais ausentes", async () => {
