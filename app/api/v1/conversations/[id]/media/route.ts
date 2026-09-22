@@ -14,6 +14,7 @@ import { extFromMime, MAX_MEDIA_BYTES } from "@/lib/messaging/media/types";
 import { validateOutboundMedia } from "@/lib/messaging/media/upload-validation";
 import { transcodificarNotaDeVoz } from "@/lib/messaging/media/voice-transcode";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { traduzir } from "@/lib/i18n/dicionario";
 
 export const dynamic = "force-dynamic";
@@ -51,7 +52,12 @@ export async function POST(req: NextRequest, ctx: RouteCtx): Promise<Response> {
   // zero linha — a conversa existente viraria 404 e o upload por token, que é a
   // capacidade que este PR entrega, nunca funcionaria. Quem protege aqui é o
   // filtro explícito de `organization_id` logo abaixo, que vale nos dois ramos.
-  const supabase = authz.supabase;
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(activeOrg.orgId, createAdminClient());
+  } catch (err) {
+    return fail("tenant_data_plane_unavailable", err instanceof Error ? err.message : "Tenant data plane unavailable.", 503, { requestId });
+  }
 
   // RLS (no ramo da sessão) + filtro explícito: a conversa precisa ser da org ativa.
   const { data: conv, error: convErr } = await supabase
@@ -119,3 +125,4 @@ export async function POST(req: NextRequest, ctx: RouteCtx): Promise<Response> {
     { requestId },
   );
 }
+
