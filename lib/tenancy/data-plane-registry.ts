@@ -11,6 +11,7 @@ import {
   DATA_PLANE_SCHEMA_NAME,
   DATA_PLANE_SCHEMA_VERSION,
   ensureDataPlaneSchema,
+  preparePostgresqlDataPlane,
 } from "./data-plane-schema";
 
 const READY = "ready" as const;
@@ -240,6 +241,9 @@ export async function verifyAndPromoteOrganizationDataPlane(
   const pool = createOrganizationPool(organizationId, row);
   const healthcheckedAt = new Date().toISOString();
   try {
+    if ((row.data_plane_provider ?? "supabase") === "postgresql") {
+      await preparePostgresqlDataPlane(pool);
+    }
     // Promotion is the provisioning gate, not a passive health check. Apply
     // the exact pinned baseline before marking the plane ready; a partial or
     // manually prepared database must never receive application traffic.

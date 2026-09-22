@@ -7,6 +7,7 @@ import {
   assertDataPlaneCompatibility,
   DATA_PLANE_SCHEMA_VERSION,
   ensureDataPlaneSchema,
+  preparePostgresqlDataPlane,
 } from "@/lib/tenancy/data-plane-schema";
 
 async function main() {
@@ -18,6 +19,10 @@ async function main() {
   const baselinePath = resolve(process.cwd(), "supabase/baseline.sql");
   const sql = await readFile(baselinePath, "utf8");
   const hash = createHash("sha256").update(sql, "utf8").digest("hex");
+  const provider = process.env.DATA_PLANE_PROVIDER?.trim() || "supabase";
+  if (provider !== "supabase" && provider !== "postgresql") {
+    throw new Error("DATA_PLANE_PROVIDER deve ser supabase ou postgresql");
+  }
   const pool = new Pool({
     connectionString: url,
     max: 1,
@@ -26,7 +31,8 @@ async function main() {
   });
 
   try {
-    await assertDataPlaneCompatibility(pool);
+    if (provider === "postgresql") await preparePostgresqlDataPlane(pool);
+    await assertDataPlaneCompatibility(pool, provider);
     const result = await ensureDataPlaneSchema(pool, {
       sql,
       version: DATA_PLANE_SCHEMA_VERSION,

@@ -1,3 +1,6 @@
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+
 export const DATA_PLANE_SCHEMA_VERSION = 381;
 export const DATA_PLANE_SCHEMA_NAME = "deskcomm_data_plane_schema";
 
@@ -7,6 +10,7 @@ export type DataPlaneSchemaClient = {
   release(): void;
 };
 type TransactionPool = { connect(): Promise<DataPlaneSchemaClient> };
+type SqlPool = { query(sql: string): Promise<unknown> };
 
 export type DataPlaneSchemaResult = {
   action: "initialized" | "updated" | "unchanged";
@@ -15,6 +19,25 @@ export type DataPlaneSchemaResult = {
 };
 
 export type DataPlaneProvider = "supabase" | "postgresql";
+
+/**
+ * Installs the small operational compatibility layer before the PostgreSQL
+ * gate runs. It does not install Auth or Storage services: those remain in the
+ * Supabase Cloud control plane. The SQL is deliberately versioned as files so
+ * the promotion path and the self-host test harness use the same contract.
+ */
+export async function preparePostgresqlDataPlane(pool: SqlPool): Promise<void> {
+  const prelude = await readFile(
+    resolve(process.cwd(), "scripts/selfhost-prelude.sql"),
+    "utf8",
+  );
+  const contract = await readFile(
+    resolve(process.cwd(), "scripts/data-plane-operational-contract.sql"),
+    "utf8",
+  );
+  await pool.query(prelude);
+  await pool.query(contract);
+}
 
 export async function assertDataPlaneCompatibility(
   pool: TransactionPool,
