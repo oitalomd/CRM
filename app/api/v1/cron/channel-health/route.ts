@@ -56,6 +56,7 @@ import { sincronizarSaudeDaConexao } from "@/lib/channels/health";
 import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -137,6 +138,7 @@ async function handle(req: NextRequest): Promise<Response> {
 
       const saude = await adapter.checkHealth({
         organizationId: s.organization_id,
+        dataClient: await getTenantDataClient(s.organization_id, admin),
         sessionRef,
       });
       verificadas++;
@@ -179,3 +181,4 @@ async function handle(req: NextRequest): Promise<Response> {
 
 export const GET = handle;
 export const POST = handle;
+
