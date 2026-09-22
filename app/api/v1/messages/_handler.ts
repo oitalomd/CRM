@@ -803,6 +803,7 @@ export async function sendMessageHandler(
               await adapter.sendTemplate({
                 beforeSend: checkBoundary,
                 organizationId: ctx.organization_id,
+                dataClient: supabase,
                 sessionRef: resolveSessionRef(c.channel_sessions),
                 to: chatId,
                 providerConversationId: c.provider_conversation_id,
@@ -836,6 +837,7 @@ export async function sendMessageHandler(
         ({ externalId } = await adapter.send({
           beforeSend: checkBoundary,
           organizationId: ctx.organization_id,
+          dataClient: supabase,
           sessionRef: resolveSessionRef(c.channel_sessions),
           to: chatId,
           providerConversationId: c.provider_conversation_id,
@@ -867,6 +869,7 @@ export async function sendMessageHandler(
         ({ externalId } = await adapter.send({
           beforeSend: checkBoundary,
           organizationId: ctx.organization_id,
+          dataClient: supabase,
           sessionRef: resolveSessionRef(c.channel_sessions),
           to: chatId,
           providerConversationId: c.provider_conversation_id,
@@ -884,6 +887,7 @@ export async function sendMessageHandler(
         ({ externalId } = await adapter.send({
           beforeSend: checkBoundary,
           organizationId: ctx.organization_id,
+          dataClient: supabase,
           sessionRef: resolveSessionRef(c.channel_sessions),
           to: chatId,
           providerConversationId: c.provider_conversation_id,
