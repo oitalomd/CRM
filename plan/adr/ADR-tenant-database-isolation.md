@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposto. Não aplicar diretamente na instalação de produção.
+Aceito para implementação incremental. Não aplicar diretamente na instalação
+de produção sem canário, backup e rollback comprovados.
 
 ## Contexto
 
@@ -22,21 +23,28 @@ Adotar uma arquitetura de dois planos:
 
 1. **Control plane**: o Supabase atual mantém autenticação, usuários,
    organizações, membros, estado de provisionamento e o catálogo de conexões.
-2. **Data plane**: cada organização recebe um projeto/banco Supabase dedicado
-   (PostgreSQL compatível com os schemas e extensões usados pelo Deskcomm),
-   identificado por um registro no control plane. Dados operacionais do CRM,
-   conversas, contatos, pipelines, configurações, IA e auditoria do tenant
-   ficam no banco dedicado.
-3. **Roteamento por requisição**: a organização ativa é resolvida a partir da
+2. **Data plane**: cada organização recebe um PostgreSQL dedicado na VPS,
+   com `pgvector` e uma camada HTTP/SQL compatível com o cliente usado pelo
+   Deskcomm. Dados operacionais do CRM, conversas, contatos, pipelines,
+   configurações, IA e auditoria do tenant ficam no banco dedicado.
+3. **Compatibilidade de identidade**: o Supabase Cloud continua sendo a
+   autoridade de usuários e organizações. O data plane recebe somente a
+   identidade validada da sessão e uma réplica mínima dos IDs necessários para
+   FKs e auditoria; ele não implementa login, troca de senha ou OAuth.
+4. **Storage por fases**: arquivos continuam no Storage do Supabase Cloud na
+   primeira fase. O registro operacional guarda apenas referências estáveis.
+   MinIO/S3 só entra depois de uma migração de mídia e de testes de URLs
+   assinadas, expiração, remoção LGPD e restauração.
+5. **Roteamento por requisição**: a organização ativa é resolvida a partir da
    sessão e do vínculo validado; o cliente do data plane é criado a partir do
    registro confiável do tenant, nunca de um `organization_id` enviado pelo
    navegador.
-4. **Workers**: jobs carregam `organization_id` e resolvem o banco antes de
+6. **Workers**: jobs carregam `organization_id` e resolvem o banco antes de
    executar. Nenhum worker pode usar um cliente global para dados de negócio.
-5. **Migrações**: uma versão de schema é aplicada idempotentemente a cada
+7. **Migrações**: uma versão de schema é aplicada idempotentemente a cada
    banco novo e a cada upgrade. O provisionamento só conclui quando o banco
    passa pelo health check e pela versão mínima.
-6. **Arquivos e integrações**: caminhos de storage, tokens cifrados, filas,
+8. **Arquivos e integrações**: caminhos de storage, tokens cifrados, filas,
    webhooks e conexões externas recebem escopo explícito de organização.
 
 ## Por que não fazer uma conversão direta
@@ -81,12 +89,16 @@ homologação terminar.
 
 ## Compatibilidade do data plane
 
-O `supabase/baseline.sql` atual é um baseline completo do ecossistema Supabase:
-ele usa `auth`, `storage`, `extensions` e extensões como `pgvector`. Portanto,
-uma instância PostgreSQL vanilla não é um data plane válido para o código atual.
-O provisionador deve rejeitar conexões sem esses pré-requisitos antes de
-executar SQL. Não é permitido criar schemas/tabelas falsos para simular os
-serviços internos do Supabase. Se PostgreSQL vanilla for uma exigência futura,
-será necessário primeiro publicar um baseline de negócio independente, sem
-dependências de autenticação/storage do Supabase.
+O `supabase/baseline.sql` atual é um baseline do ecossistema Supabase e não
+pode ser executado diretamente em PostgreSQL vanilla: ele contém referências a
+`auth`, RLS dependente de `auth.uid()`, FKs para `auth.users` e partes de
+Storage. A implementação híbrida deve criar um baseline operacional separado,
+sem serviço de login e sem dados de credenciais, e uma camada explícita de
+identidade que leia somente claims validados pelo servidor.
+
+Não é permitido mascarar uma instalação incompleta criando schemas vazios ou
+desabilitando RLS para “fazer passar”. O gate deve validar PostgreSQL,
+`pgvector`, o contrato de identidade e as migrações operacionais. Até esse
+baseline independente estar pronto, o data plane dedicado continua exigindo o
+ambiente Supabase compatível anterior.
 

@@ -14,7 +14,12 @@ export type DataPlaneSchemaResult = {
   hash: string;
 };
 
-export async function assertDataPlaneCompatibility(pool: TransactionPool): Promise<void> {
+export type DataPlaneProvider = "supabase" | "postgresql";
+
+export async function assertDataPlaneCompatibility(
+  pool: TransactionPool,
+  provider: DataPlaneProvider = "supabase",
+): Promise<void> {
   const client = await pool.connect();
   try {
     const result = await client.query(`
@@ -24,19 +29,31 @@ export async function assertDataPlaneCompatibility(pool: TransactionPool): Promi
         to_regnamespace('extensions')::text as extensions_schema,
         to_regtype('public.vector')::text as vector_type,
         to_regprocedure('extensions.uuid_generate_v4()')::text as uuid_generator,
-        to_regprocedure('extensions.gen_random_bytes(integer)')::text as random_generator
+        to_regprocedure('extensions.gen_random_bytes(integer)')::text as random_generator,
+        to_regclass('public.deskcomm_operational_contract')::text as operational_contract
     `);
     const row = result.rows[0] ?? {};
-    const missing = [
-      ["auth", row.auth_schema],
-      ["storage", row.storage_schema],
-      ["extensions", row.extensions_schema],
-      ["public.vector", row.vector_type],
-      ["extensions.uuid_generate_v4()", row.uuid_generator],
-      ["extensions.gen_random_bytes(integer)", row.random_generator],
-    ].filter(([, value]) => !value).map(([name]) => name);
+    const required = provider === "postgresql"
+      ? [
+          ["public.vector", row.vector_type],
+          ["extensions.uuid_generate_v4()", row.uuid_generator],
+          ["extensions.gen_random_bytes(integer)", row.random_generator],
+          ["public.deskcomm_operational_contract", row.operational_contract],
+        ]
+      : [
+          ["auth", row.auth_schema],
+          ["storage", row.storage_schema],
+          ["extensions", row.extensions_schema],
+          ["public.vector", row.vector_type],
+          ["extensions.uuid_generate_v4()", row.uuid_generator],
+          ["extensions.gen_random_bytes(integer)", row.random_generator],
+        ];
+    const missing = required.filter(([, value]) => !value).map(([name]) => name);
     if (missing.length > 0) {
-      throw new Error(`data_plane_database_incompatible:${missing.join(",")}`);
+      const prefix = provider === "supabase"
+        ? "data_plane_database_incompatible"
+        : `data_plane_database_incompatible:${provider}`;
+      throw new Error(`${prefix}:${missing.join(",")}`);
     }
   } finally {
     client.release();

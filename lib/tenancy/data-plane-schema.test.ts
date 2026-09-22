@@ -23,6 +23,30 @@ describe("data-plane schema runner", () => {
     );
   });
 
+  it("exige o contrato de identidade no PostgreSQL operacional", async () => {
+    const client = {
+      query: async (sql: string) => {
+        if (sql.includes("to_regnamespace")) {
+          return {
+            rows: [{
+              vector_type: "vector",
+              uuid_generator: "uuid_generate_v4()",
+              random_generator: "gen_random_bytes(integer)",
+              operational_contract: null,
+            }],
+            rowCount: 1,
+          };
+        }
+        return { rows: [], rowCount: 0 };
+      },
+      release: () => undefined,
+    };
+    const pool = { connect: async () => client };
+    await expect(assertDataPlaneCompatibility(pool, "postgresql")).rejects.toThrow(
+      "data_plane_database_incompatible:postgresql:public.deskcomm_operational_contract",
+    );
+  });
+
   it("inicializa e registra a versão dentro da transação", async () => {
     const { pool, calls } = fakePool([]);
 

@@ -16,9 +16,11 @@ import {
 const READY = "ready" as const;
 
 type DataPlaneStatus = "provisioning" | "ready" | "degraded" | "retiring" | "failed";
+export type DataPlaneProvider = "supabase" | "postgresql";
 
 interface DataPlaneRow {
   organization_id: string;
+  data_plane_provider?: DataPlaneProvider;
   status: DataPlaneStatus;
   connection_uri_encrypted: unknown;
   connection_uri_iv: unknown;
@@ -75,7 +77,7 @@ async function readDataPlaneRow(
   const { data, error } = await registry(admin)
     .from("organization_data_planes")
     .select(
-      "organization_id,status,connection_uri_encrypted,connection_uri_iv,connection_uri_tag,schema_version,api_url_encrypted,api_url_iv,api_url_tag,api_key_encrypted,api_key_iv,api_key_tag",
+      "organization_id,data_plane_provider,status,connection_uri_encrypted,connection_uri_iv,connection_uri_tag,schema_version,api_url_encrypted,api_url_iv,api_url_tag,api_key_encrypted,api_key_iv,api_key_tag",
     )
     .eq("organization_id", organizationId)
     .maybeSingle();
@@ -109,6 +111,7 @@ function createOrganizationPool(organizationId: string, row: DataPlaneRow): Pool
 export async function registerOrganizationDataPlane(input: {
   organizationId: string;
   connectionUri: string;
+  provider?: DataPlaneProvider;
   apiUrl?: string;
   apiKey?: string;
   status?: Exclude<DataPlaneStatus, "retiring">;
@@ -123,6 +126,7 @@ export async function registerOrganizationDataPlane(input: {
     .upsert(
       {
         organization_id: input.organizationId,
+        data_plane_provider: input.provider ?? "supabase",
         status: input.status ?? "provisioning",
         connection_uri_encrypted: bufToBytea(encrypted.ciphertext),
         connection_uri_iv: bufToBytea(encrypted.iv),
@@ -239,7 +243,7 @@ export async function verifyAndPromoteOrganizationDataPlane(
     // Promotion is the provisioning gate, not a passive health check. Apply
     // the exact pinned baseline before marking the plane ready; a partial or
     // manually prepared database must never receive application traffic.
-    await assertDataPlaneCompatibility(pool);
+    await assertDataPlaneCompatibility(pool, row.data_plane_provider ?? "supabase");
     const baselinePath = resolve(process.cwd(), "supabase/baseline.sql");
     const baselineSql = await readFile(baselinePath, "utf8");
     const baselineHash = createHash("sha256").update(baselineSql, "utf8").digest("hex");

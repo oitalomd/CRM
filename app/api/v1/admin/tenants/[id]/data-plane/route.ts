@@ -22,6 +22,7 @@ const connectionUri = z
   });
 const apiUrl = z.string().trim().url().max(2048);
 const apiKey = z.string().trim().min(20).max(4096);
+const provider = z.enum(["supabase", "postgresql"]);
 
 const dataPlaneAction = z.discriminatedUnion("action", [
   z.object({
@@ -29,6 +30,7 @@ const dataPlaneAction = z.discriminatedUnion("action", [
     connection_uri: connectionUri,
     api_url: apiUrl,
     api_key: apiKey,
+    provider: provider.default("supabase"),
     schema_version: z.number().int().min(0).default(0),
   }),
   z.object({ action: z.literal("promote") }),
@@ -36,6 +38,7 @@ const dataPlaneAction = z.discriminatedUnion("action", [
 
 type DataPlaneSafeRow = {
   organization_id: string;
+  data_plane_provider: "supabase" | "postgresql";
   status: string;
   connection_uri_last4: string;
   schema_version: number;
@@ -65,7 +68,7 @@ export async function GET(
   const { data, error } = await createAdminClient()
     .from("organization_data_planes")
     .select(
-      "organization_id,status,connection_uri_last4,schema_version,last_healthcheck_at,last_migration_at,last_error_code,created_at,updated_at",
+      "organization_id,data_plane_provider,status,connection_uri_last4,schema_version,last_healthcheck_at,last_migration_at,last_error_code,created_at,updated_at",
     )
     .eq("organization_id", id)
     .maybeSingle();
@@ -111,6 +114,7 @@ export async function POST(
       await registerOrganizationDataPlane({
         organizationId: id,
         connectionUri: parsed.data.connection_uri,
+        provider: parsed.data.provider,
         apiUrl: parsed.data.api_url,
         apiKey: parsed.data.api_key,
         status: "provisioning",
@@ -125,7 +129,10 @@ export async function POST(
         resourceType: "organization_data_plane",
         resourceId: id,
         requestId,
-        metadata: { schema_version: parsed.data.schema_version },
+        metadata: {
+          schema_version: parsed.data.schema_version,
+          data_plane_provider: parsed.data.provider,
+        },
       });
       return ok({ status: "provisioning" }, { status: 201, requestId });
     }
