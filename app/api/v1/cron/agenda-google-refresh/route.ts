@@ -40,6 +40,7 @@ import { classificarErroDoGoogle, estadoDaConexaoApos } from "@/lib/agenda/googl
 import { fundirTokens, precisaRenovar, type TokenDoGoogle } from "@/lib/agenda/google/oauth";
 import { renovarToken } from "@/lib/agenda/google/token";
 import { env } from "@/lib/env";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -90,23 +91,40 @@ export async function renovarAgendasDoGoogle(
   }
 
   const limite = new Date(opcoes.agora.getTime() + JANELA_DE_RENOVACAO_MS).toISOString();
-  const { data, error } = await admin
-    .from("calendar_connections")
-    .select(
-      "id, organization_id, user_id, account_email, status, token_expires_at, oauth_access_token_encrypted, oauth_refresh_token_encrypted, scopes",
-    )
-    .in("status", ["healthy", "rate_limited"])
-    .not("token_expires_at", "is", null)
-    .lte("token_expires_at", limite)
-    .order("token_expires_at", { ascending: true })
+  const { data: organizations, error: organizationsError } = await admin
+    .from("organizations")
+    .select("id")
     .limit(TETO_POR_RODADA);
-
-  if (error || !data) return resumo;
+  if (organizationsError || !organizations) return resumo;
+  const dataClientByOrg = new Map<string, ReturnType<typeof createAdminClient>>();
+  const rawConnections: LinhaDeConexao[] = [];
+  for (const organization of organizations) {
+    try {
+      const dataClient = await getTenantDataClient(organization.id, admin);
+      dataClientByOrg.set(organization.id, dataClient);
+      const { data, error } = await dataClient
+        .from("calendar_connections")
+        .select(
+          "id, organization_id, user_id, account_email, status, token_expires_at, oauth_access_token_encrypted, oauth_refresh_token_encrypted, scopes",
+        )
+        .eq("organization_id", organization.id)
+        .in("status", ["healthy", "rate_limited"])
+        .not("token_expires_at", "is", null)
+        .lte("token_expires_at", limite)
+        .order("token_expires_at", { ascending: true })
+        .limit(TETO_POR_RODADA);
+      if (!error && data) rawConnections.push(...(data as unknown as LinhaDeConexao[]));
+    } catch {
+      // O tenant indisponível será tentado novamente na próxima rodada.
+    }
+  }
   // A agenda de quem SAIU da organização para de ser lida. O token do Google
   // continua válido — ele não sabe nada de RH —, então o corte é aqui.
-  const linhas = await apenasDeMembrosAtivos(admin, data as unknown as LinhaDeConexao[]);
+  const linhas = await apenasDeMembrosAtivos(admin, rawConnections);
 
   for (const linha of linhas) {
+    const dataClient = dataClientByOrg.get(linha.organization_id);
+    if (!dataClient) continue;
     resumo.examinadas += 1;
 
     // A varredura já filtrou pelo banco, mas a régua de "está na hora" é uma só
@@ -116,12 +134,12 @@ export async function renovarAgendasDoGoogle(
     if (!linha.oauth_refresh_token_encrypted) {
       // Conexão sem chave de renovação não se recupera sozinha. Desde a rota de
       // callback isso não nasce mais; linhas antigas podem existir.
-      await marcarConexao(admin, linha, "token_expired", "sem chave de renovação guardada");
+      await marcarConexao(dataClient, linha, "token_expired", "sem chave de renovação guardada");
       resumo.reautenticar += 1;
       continue;
     }
 
-    const refresh = await decryptWebhookSecret(admin, linha.oauth_refresh_token_encrypted);
+    const refresh = await decryptWebhookSecret(dataClient, linha.oauth_refresh_token_encrypted);
     if (!refresh) {
       // Decifra que falha é a chave de cifra da instalação ausente ou trocada.
       // Não rebaixa a conexão: o problema é do servidor, não da autorização, e
@@ -135,7 +153,7 @@ export async function renovarAgendasDoGoogle(
       const classificacao = classificarErroDoGoogle({ error: leitura.detalhe }, "token");
       const novoEstado = estadoDaConexaoApos(classificacao.desfecho);
       if (novoEstado && novoEstado !== "healthy") {
-        await marcarConexao(admin, linha, novoEstado, classificacao.mensagem);
+        await marcarConexao(dataClient, linha, novoEstado, classificacao.mensagem);
         if (novoEstado === "token_expired") resumo.reautenticar += 1;
         else resumo.falhas += 1;
       } else {
@@ -155,13 +173,13 @@ export async function renovarAgendasDoGoogle(
     };
     const fundido = fundirTokens(anterior, leitura.token);
 
-    const accessCifrado = await encryptWebhookSecret(admin, fundido.access_token);
+    const accessCifrado = await encryptWebhookSecret(dataClient, fundido.access_token);
     if (!accessCifrado) {
       resumo.falhas += 1;
       continue;
     }
 
-    const { error: erroAoGravar } = await admin
+    const { error: erroAoGravar } = await dataClient
       .from("calendar_connections")
       .update({
         oauth_access_token_encrypted: accessCifrado,
@@ -225,3 +243,4 @@ export async function GET(req: NextRequest): Promise<Response> {
 export async function POST(req: NextRequest): Promise<Response> {
   return executar(req);
 }
+
