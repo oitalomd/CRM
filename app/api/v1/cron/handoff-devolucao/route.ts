@@ -46,6 +46,7 @@ import {
 import { devolverAtendimentoAoAgente } from "@/lib/escalacao/retomada";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -88,7 +89,7 @@ async function prazosPorOrganizacao(admin: SupabaseClient): Promise<Map<string, 
  * a conversa da fila humana e a deixa muda.
  */
 async function sessoesComAgente(
-  admin: SupabaseClient,
+  dataClients: Map<string, SupabaseClient>,
   orgIds: string[],
 ): Promise<Map<string, Set<string>>> {
   const out = new Map<string, Set<string>>();
@@ -99,32 +100,35 @@ async function sessoesComAgente(
     out.set(org, s);
   };
 
-  const { data: agentes, error: erroAgentes } = await admin
-    .from("ai_agents")
-    .select("organization_id, published_version_id, ai_agent_versions!ai_agents_published_version_id_fkey(channel_session_id, status)")
-    .in("organization_id", orgIds)
-    .is("archived_at", null)
-    .not("published_version_id", "is", null);
-  if (erroAgentes) throw new Error(`ai_agents: ${erroAgentes.message}`);
   type Versao = { channel_session_id: string | null; status: string };
-  // O embed por FK many-to-one volta como OBJETO em runtime, mas os tipos
-  // gerados o declaram como lista — o dispatcher normaliza do mesmo jeito.
-  for (const a of (agentes ?? []) as unknown as Array<{
-    organization_id: string;
-    ai_agent_versions: Versao | Versao[] | null;
-  }>) {
-    const v = Array.isArray(a.ai_agent_versions) ? (a.ai_agent_versions[0] ?? null) : a.ai_agent_versions;
-    if (v && v.status === "published") add(a.organization_id, v.channel_session_id);
-  }
+  for (const orgId of orgIds) {
+    const dataClient = dataClients.get(orgId);
+    if (!dataClient) continue;
+    const { data: agentes, error: erroAgentes } = await dataClient
+      .from("ai_agents")
+      .select("organization_id, published_version_id, ai_agent_versions!ai_agents_published_version_id_fkey(channel_session_id, status)")
+      .eq("organization_id", orgId)
+      .is("archived_at", null)
+      .not("published_version_id", "is", null);
+    if (erroAgentes) throw new Error(`ai_agents: ${erroAgentes.message}`);
+    // O embed por FK many-to-one volta como OBJETO em runtime.
+    for (const a of (agentes ?? []) as unknown as Array<{
+      organization_id: string;
+      ai_agent_versions: Versao | Versao[] | null;
+    }>) {
+      const v = Array.isArray(a.ai_agent_versions) ? (a.ai_agent_versions[0] ?? null) : a.ai_agent_versions;
+      if (v && v.status === "published") add(a.organization_id, v.channel_session_id);
+    }
 
-  const { data: roteadores, error: erroRoteadores } = await admin
-    .from("ai_routers")
-    .select("organization_id, channel_session_id")
-    .in("organization_id", orgIds)
-    .eq("is_active", true);
-  if (erroRoteadores) throw new Error(`ai_routers: ${erroRoteadores.message}`);
-  for (const r of (roteadores ?? []) as Array<{ organization_id: string; channel_session_id: string | null }>) {
-    add(r.organization_id, r.channel_session_id);
+    const { data: roteadores, error: erroRoteadores } = await dataClient
+      .from("ai_routers")
+      .select("organization_id, channel_session_id")
+      .eq("organization_id", orgId)
+      .eq("is_active", true);
+    if (erroRoteadores) throw new Error(`ai_routers: ${erroRoteadores.message}`);
+    for (const r of (roteadores ?? []) as Array<{ organization_id: string; channel_session_id: string | null }>) {
+      add(r.organization_id, r.channel_session_id);
+    }
   }
   return out;
 }
@@ -136,31 +140,49 @@ export async function devolverHandoffsVencidos(
 ): Promise<DevolucaoResultado> {
   const prazoPorOrg = await prazosPorOrganizacao(admin);
   if (prazoPorOrg.size === 0) return { organizacoes: 0, examinadas: 0, devolvidas: 0, falhas: 0 };
+  const dataClientByOrg = new Map<string, SupabaseClient>();
+  for (const orgId of [...prazoPorOrg.keys()]) {
+    try {
+      dataClientByOrg.set(orgId, await getTenantDataClient(orgId, admin));
+    } catch {
+      prazoPorOrg.delete(orgId);
+    }
+  }
   const orgIds = [...prazoPorOrg.keys()];
-
-  const { data, error } = await admin
-    .from("conversations")
-    .select(
-      "id, organization_id, channel_session_id, status, assignee_kind, assigned_to_user_id, assigned_at, bot_silenced_until, last_handoff_at, last_outbound_at, status_changed_at",
-    )
-    .in("organization_id", orgIds)
-    .in("status", ["open", "pending", "claimed", "ai_handling"])
-    .or("bot_silenced_until.eq.infinity,assignee_kind.eq.user,assigned_to_user_id.not.is.null")
-    .limit(SCAN_LIMIT);
-  if (error) throw new Error(`conversations: ${error.message}`);
-  const conversas = (data ?? []) as ConversaEmHandoff[];
+  const conversas: ConversaEmHandoff[] = [];
+  for (const orgId of orgIds) {
+    const dataClient = dataClientByOrg.get(orgId);
+    if (!dataClient) continue;
+    const { data, error } = await dataClient
+      .from("conversations")
+      .select(
+        "id, organization_id, channel_session_id, status, assignee_kind, assigned_to_user_id, assigned_at, bot_silenced_until, last_handoff_at, last_outbound_at, status_changed_at",
+      )
+      .eq("organization_id", orgId)
+      .in("status", ["open", "pending", "claimed", "ai_handling"])
+      .or("bot_silenced_until.eq.infinity,assignee_kind.eq.user,assigned_to_user_id.not.is.null")
+      .limit(SCAN_LIMIT);
+    if (error) throw new Error(`conversations: ${error.message}`);
+    conversas.push(...((data ?? []) as ConversaEmHandoff[]));
+  }
+  conversas.splice(SCAN_LIMIT);
 
   const vencidas = selecionarVencidas(conversas, {
     prazoPorOrg,
-    sessoesComAgente: await sessoesComAgente(admin, orgIds),
+    sessoesComAgente: await sessoesComAgente(dataClientByOrg, orgIds),
     agoraMs: agora.getTime(),
   });
 
   let devolvidas = 0;
   let falhas = 0;
   for (const { conversa, minutos } of vencidas) {
+    const dataClient = dataClientByOrg.get(conversa.organization_id);
+    if (!dataClient) {
+      falhas++;
+      continue;
+    }
     const r = await devolverAtendimentoAoAgente(
-      { supabase: admin, organizationId: conversa.organization_id, actor: ATOR_DO_CRON, requestId },
+      { supabase: dataClient, organizationId: conversa.organization_id, actor: ATOR_DO_CRON, requestId },
       { conversationId: conversa.id, origem: { automatica: { minutos } } },
     );
     if (r.ok) {
@@ -238,3 +260,4 @@ export async function GET(req: NextRequest): Promise<Response> {
 export async function POST(req: NextRequest): Promise<Response> {
   return handle(req);
 }
+
