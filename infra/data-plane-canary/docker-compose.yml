@@ -58,9 +58,9 @@ services:
       - /bin/sh
       - -ec
       - |
-        wget -qO /sql/selfhost-prelude.sql https://raw.githubusercontent.com/oitalomd/CRM/codex/multi-org-data-plane-foundation/scripts/selfhost-prelude.sql
-        wget -qO /sql/data-plane-operational-contract.sql https://raw.githubusercontent.com/oitalomd/CRM/codex/multi-org-data-plane-foundation/scripts/data-plane-operational-contract.sql
-        wget -qO /sql/baseline.sql https://raw.githubusercontent.com/melgarafael/DeskcommCRM/main/supabase/baseline.sql
+        wget -qO /sql/selfhost-prelude.sql https://raw.githubusercontent.com/oitalomd/CRM/codex/hybrid-repaired/scripts/selfhost-prelude.sql
+        wget -qO /sql/data-plane-operational-contract.sql https://raw.githubusercontent.com/oitalomd/CRM/codex/hybrid-repaired/scripts/data-plane-operational-contract.sql
+        wget -qO /sql/baseline.sql https://raw.githubusercontent.com/oitalomd/CRM/codex/hybrid-repaired/supabase/baseline.sql
     volumes:
       - deskcomm-data-plane-canary-sql:/sql
     networks: [internal]
@@ -129,4 +129,3 @@ networks:
   coolify:
     external: true
     name: coolify
-
