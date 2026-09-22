@@ -1,5 +1,5 @@
-Warning: truncated output (original token count: 421485)
-... 637361 bytes omitted ...
+Warning: truncated output (original token count: 476762)
+... 858470 bytes omitted ...
 
 
 
@@ -1587,7 +1587,1708 @@ CREATE TABLE IF NOT EXISTS "public"."incidents" (
 ALTER TABLE "public"."incidents" OWNER TO "postgres";
 
 
-CREATE TABLE IF NOT EXISTS "public"."lgpd_requests" …232152 tokens truncated…count);
+CREATE TABLE IF NOT EXISTS "public"."lgpd_requests" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "request_type" "text" NOT NULL,
+    "source" "text" NOT NULL,
+    "contact_id" "uuid",
+    "external_customer_id" "text",
+    "status" "text" DEFAULT 'received'::"text" NOT NULL,
+    "attempts" integer DEFAULT 0 NOT NULL,
+    "received_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "due_at" timestamp with time zone NOT NULL,
+    "completed_at" timestamp with time zone,
+    "request_payload" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
+    "result" "jsonb",
+    "error_message" "text",
+    "cascaded_to" "jsonb",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "emergency" boolean DEFAULT false NOT NULL,
+    "scope" "text" DEFAULT 'contact'::"text" NOT NULL,
+    CONSTRAINT "lgpd_requests_request_type_check" CHECK (("request_type" = ANY (ARRAY['data_request'::"text", 'redact'::"text", 'store_redact'::"text"]))),
+    CONSTRAINT "lgpd_requests_scope_check" CHECK (("scope" = ANY (ARRAY['contact'::"text", 'tenant'::"text"]))),
+    CONSTRAINT "lgpd_requests_source_check" CHECK (("source" = ANY (ARRAY['nuvemshop'::"text", 'manual'::"text", 'api'::"text", 'support'::"text"]))),
+    CONSTRAINT "lgpd_requests_status_check" CHECK (("status" = ANY (ARRAY['received'::"text", 'processing'::"text", 'completed'::"text", 'failed'::"text", 'expired'::"text"])))
+);
+
+
+ALTER TABLE "public"."lgpd_requests" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."merge_queue" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "candidates" "uuid"[] NOT NULL,
+    "reason" "text" NOT NULL,
+    "trigger_payload" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
+    "status" "text" DEFAULT 'pending'::"text" NOT NULL,
+    "resolution" "jsonb",
+    "resolved_by_user_id" "uuid",
+    "resolved_at" timestamp with time zone,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "merge_queue_candidates_min2" CHECK (("array_length"("candidates", 1) >= 2)),
+    CONSTRAINT "merge_queue_status_enum" CHECK (("status" = ANY (ARRAY['pending'::"text", 'resolved'::"text", 'discarded'::"text"])))
+);
+
+
+ALTER TABLE "public"."merge_queue" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."messages" (
+    "id" "uuid" DEFAULT "extensions"."uuid_generate_v4"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "conversation_id" "uuid" NOT NULL,
+    "channel_session_id" "uuid" NOT NULL,
+    "contact_id" "uuid" NOT NULL,
+    "external_id" "text",
+    "type" "text" NOT NULL,
+    "direction" "text" NOT NULL,
+    "status" "text" DEFAULT 'received'::"text" NOT NULL,
+    "ack" integer,
+    "error_code" "text",
+    "error_message" "text",
+    "body" "text",
+    "media_url" "text",
+    "media_mime" "text",
+    "media_size_bytes" bigint,
+    "media_storage_path" "text",
+    "sent_via" "text" DEFAULT 'crm'::"text" NOT NULL,
+    "sent_by_user_id" "uuid",
+    "sent_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "delivered_at" timestamp with time zone,
+    "read_at" timestamp with time zone,
+    "metadata" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
+    "activity_id" "uuid",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "messages_direction_check" CHECK (("direction" = ANY (ARRAY['inbound'::"text", 'outbound'::"text"]))),
+    CONSTRAINT "messages_sent_via_check" CHECK (("sent_via" = ANY (ARRAY['crm'::"text", 'external_device'::"text", 'automation'::"text", 'ai'::"text", 'user'::"text", 'system'::"text"]))),
+    CONSTRAINT "messages_status_check" CHECK (("status" = ANY (ARRAY['queued'::"text", 'received'::"text", 'sending'::"text", 'sent'::"text", 'delivered'::"text", 'read'::"text", 'failed'::"text"]))),
+    CONSTRAINT "messages_type_check" CHECK (("type" = ANY (ARRAY['text'::"text", 'image'::"text", 'video'::"text", 'audio'::"text", 'document'::"text", 'sticker'::"text", 'location'::"text", 'contact'::"text", 'reaction'::"text", 'system'::"text"])))
+);
+
+
+ALTER TABLE "public"."messages" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."nuvemshop_products" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "external_id" "text" NOT NULL,
+    "title" "text" NOT NULL,
+    "description" "text",
+    "price_cents" bigint NOT NULL,
+    "available_qty" integer DEFAULT 0 NOT NULL,
+    "url" "text",
+    "image_url" "text",
+    "rag_indexed_at" timestamp with time zone,
+    "rag_chunk_count" integer DEFAULT 0 NOT NULL,
+    "payload" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
+    "last_updated_at" timestamp with time zone NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "nuvemshop_products_price_cents_check" CHECK (("price_cents" >= 0))
+);
+
+
+ALTER TABLE "public"."nuvemshop_products" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."orders" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "external_id" "text" NOT NULL,
+    "external_provider" "text" NOT NULL,
+    "customer_external_id" "text",
+    "contact_id" "uuid",
+    "status" "text" NOT NULL,
+    "total_cents" bigint NOT NULL,
+    "currency" character(3) DEFAULT 'BRL'::"bpchar" NOT NULL,
+    "payment_method" "text",
+    "fulfillment_status" "text",
+    "tracking_code" "text",
+    "payload" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
+    "ordered_at" timestamp with time zone NOT NULL,
+    "updated_at_remote" timestamp with time zone,
+    "is_anonymized" boolean DEFAULT false NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "orders_external_provider_check" CHECK (("external_provider" = ANY (ARRAY['nuvemshop'::"text", 'vtex'::"text", 'shopify'::"text"]))),
+    CONSTRAINT "orders_fulfillment_status_check" CHECK (("fulfillment_status" = ANY (ARRAY['unpacked'::"text", 'packed'::"text", 'shipped'::"text", 'delivered'::"text"]))),
+    CONSTRAINT "orders_status_check" CHECK (("status" = ANY (ARRAY['pending'::"text", 'paid'::"text", 'cancelled'::"text", 'fulfilled'::"text", 'shipped'::"text", 'delivered'::"text", 'refunded'::"text"]))),
+    CONSTRAINT "orders_total_cents_check" CHECK (("total_cents" >= 0))
+);
+
+
+ALTER TABLE "public"."orders" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."organizations" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "slug" "public"."citext" NOT NULL,
+    "legal_name" "text" NOT NULL,
+    "display_name" "text" NOT NULL,
+    "cnpj" "text",
+    "status" "text" DEFAULT 'active'::"text" NOT NULL,
+    "timezone" "text" DEFAULT 'America/Sao_Paulo'::"text" NOT NULL,
+    "locale" "text" DEFAULT 'pt-BR'::"text" NOT NULL,
+    "rate_limit_rps" integer DEFAULT 100 NOT NULL,
+    "ai_budget_cents" bigint,
+    "media_retention_days" integer DEFAULT 365 NOT NULL,
+    "settings" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
+    "dpo_email" "public"."citext",
+    "privacy_policy_url" "text",
+    "onboarded_at" timestamp with time zone,
+    "suspended_at" timestamp with time zone,
+    "redacted_at" timestamp with time zone,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "created_by" "uuid",
+    "onboarding_state" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
+    "suspended_reason" "text",
+    "suspended_by" "uuid",
+    CONSTRAINT "organizations_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'suspended'::"text", 'redacted'::"text", 'archived'::"text"])))
+);
+
+
+ALTER TABLE "public"."organizations" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."organizations" IS 'Tenants do DeskcommCRM. Cada linha = 1 e-commerce cliente.';
+
+
+
+COMMENT ON COLUMN "public"."organizations"."onboarded_at" IS 'Null = ainda em onboarding; populado quando step 5 completa';
+
+
+
+COMMENT ON COLUMN "public"."organizations"."onboarding_state" IS 'Wizard state: { welcome?: {accepted_at, timezone, display_name}, whatsapp?: {session_id, status}, nuvemshop?: {connected_at, store_id}, ai?: {agent_id}, team?: {invites_sent} }';
+
+
+
+CREATE TABLE IF NOT EXISTS "public"."platform_admins" (
+    "user_id" "uuid" NOT NULL,
+    "granted_by" "uuid" NOT NULL,
+    "granted_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "scope" "text" DEFAULT 'full'::"text" NOT NULL,
+    "mfa_required" boolean DEFAULT true NOT NULL,
+    "reason" "text" NOT NULL,
+    "revoked_at" timestamp with time zone,
+    "revoked_by" "uuid",
+    "revoke_reason" "text",
+    CONSTRAINT "platform_admins_scope_check" CHECK (("scope" = ANY (ARRAY['full'::"text", 'support_readonly'::"text"])))
+);
+
+
+ALTER TABLE "public"."platform_admins" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."platform_admins" IS 'Super-admins que cruzam tenants. Modificacao SOMENTE via DBA + double-confirmation. T-04.';
+
+
+
+CREATE TABLE IF NOT EXISTS "public"."storage_redaction_queue" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "request_id" "uuid",
+    "bucket" "text" NOT NULL,
+    "object_path" "text" NOT NULL,
+    "status" "text" DEFAULT 'pending'::"text" NOT NULL,
+    "attempts" integer DEFAULT 0 NOT NULL,
+    "error_message" "text",
+    "enqueued_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "processed_at" timestamp with time zone,
+    CONSTRAINT "storage_redaction_queue_status_check" CHECK (("status" = ANY (ARRAY['pending'::"text", 'deleted'::"text", 'failed'::"text", 'skipped'::"text"])))
+);
+
+
+ALTER TABLE "public"."storage_redaction_queue" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."tenant_integrations" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "provider" "text" NOT NULL,
+    "oauth_access_token_encrypted" "bytea" NOT NULL,
+    "oauth_refresh_token_encrypted" "bytea",
+    "scopes" "text"[] DEFAULT ARRAY[]::"text"[] NOT NULL,
+    "expires_at" timestamp with time zone,
+    "status" "text" DEFAULT 'connecting'::"text" NOT NULL,
+    "status_reason" "text",
+    "store_metadata" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
+    "webhook_path_token" "text" DEFAULT "encode"("extensions"."gen_random_bytes"(24), 'hex'::"text") NOT NULL,
+    "webhook_secret_encrypted" "bytea" NOT NULL,
+    "webhook_subscriptions" "jsonb" DEFAULT '[]'::"jsonb" NOT NULL,
+    "last_sync_at" timestamp with time zone,
+    "last_health_check_at" timestamp with time zone,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "tenant_integrations_provider_check" CHECK (("provider" = ANY (ARRAY['nuvemshop'::"text", 'vtex'::"text", 'shopify'::"text"]))),
+    CONSTRAINT "tenant_integrations_status_check" CHECK (("status" = ANY (ARRAY['connecting'::"text", 'healthy'::"text", 'token_expired'::"text", 'scope_missing'::"text", 'disconnected'::"text", 'rate_limited'::"text", 'error'::"text"])))
+);
+
+
+ALTER TABLE "public"."tenant_integrations" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."user_organizations" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "user_id" "uuid" NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "role" "text" NOT NULL,
+    "invited_by" "uuid",
+    "invited_at" timestamp with time zone,
+    "accepted_at" timestamp with time zone,
+    "revoked_at" timestamp with time zone,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "user_organizations_role_check" CHECK (("role" = ANY (ARRAY['viewer'::"text", 'agent'::"text", 'manager'::"text", 'admin'::"text"])))
+);
+
+
+ALTER TABLE "public"."user_organizations" OWNER TO "postgres";
+
+
+COMMENT ON COLUMN "public"."user_organizations"."role" IS '4 roles canônicos: viewer (1) < agent (2) < manager (3) < admin (4). Hierarquia.';
+
+
+
+CREATE TABLE IF NOT EXISTS "public"."user_recovery_codes" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "user_id" "uuid" NOT NULL,
+    "code_hash" "bytea" NOT NULL,
+    "used_at" timestamp with time zone,
+    "used_ip" "inet",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "public"."user_recovery_codes" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."webhook_events_log" (
+    "id" "uuid" DEFAULT "extensions"."uuid_generate_v4"() NOT NULL,
+    "organization_id" "uuid",
+    "channel_session_id" "uuid",
+    "provider" "text" DEFAULT 'waha'::"text" NOT NULL,
+    "webhook_path_token" "text",
+    "http_method" "text" DEFAULT 'POST'::"text" NOT NULL,
+    "headers" "jsonb",
+    "raw_body" "text" NOT NULL,
+    "payload_parsed" "jsonb",
+    "signature_header" "text",
+    "valid_signature" boolean,
+    "event_type" "text",
+    "external_id" "text",
+    "status" "text" DEFAULT 'received'::"text" NOT NULL,
+    "attempts" integer DEFAULT 0 NOT NULL,
+    "error_message" "text",
+    "processed_at" timestamp with time zone,
+    "received_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "archived_at" timestamp with time zone,
+    CONSTRAINT "webhook_events_log_provider_check" CHECK (("provider" = ANY (ARRAY['waha'::"text", 'nuvemshop'::"text", 'generic'::"text"]))),
+    CONSTRAINT "webhook_events_log_status_check" CHECK (("status" = ANY (ARRAY['received'::"text", 'processed'::"text", 'error'::"text", 'dead'::"text"])))
+);
+
+
+ALTER TABLE "public"."webhook_events_log" OWNER TO "postgres";
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'ai_agent_runs_pkey' AND conrelid = '"public"."ai_agent_runs"'::regclass)
+   AND to_regclass('"public"."ai_agent_runs_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."ai_agent_runs"
+    ADD CONSTRAINT "ai_agent_runs_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'ai_agent_versions_pkey' AND conrelid = '"public"."ai_agent_versions"'::regclass)
+   AND to_regclass('"public"."ai_agent_versions_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."ai_agent_versions"
+    ADD CONSTRAINT "ai_agent_versions_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'ai_agent_versions_unique_number' AND conrelid = '"public"."ai_agent_versions"'::regclass)
+   AND to_regclass('"public"."ai_agent_versions_unique_number"') IS NULL THEN
+ALTER TABLE ONLY "public"."ai_agent_versions"
+    ADD CONSTRAINT "ai_agent_versions_unique_number" UNIQUE ("agent_id", "version_number");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'ai_agents_name_unique' AND conrelid = '"public"."ai_agents"'::regclass)
+   AND to_regclass('"public"."ai_agents_name_unique"') IS NULL THEN
+ALTER TABLE ONLY "public"."ai_agents"
+    ADD CONSTRAINT "ai_agents_name_unique" UNIQUE ("organization_id", "name");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'ai_agents_pkey' AND conrelid = '"public"."ai_agents"'::regclass)
+   AND to_regclass('"public"."ai_agents_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."ai_agents"
+    ADD CONSTRAINT "ai_agents_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'ai_budgets_pkey' AND conrelid = '"public"."ai_budgets"'::regclass)
+   AND to_regclass('"public"."ai_budgets_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."ai_budgets"
+    ADD CONSTRAINT "ai_budgets_pkey" PRIMARY KEY ("organization_id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'ai_chunks_pkey' AND conrelid = '"public"."ai_chunks"'::regclass)
+   AND to_regclass('"public"."ai_chunks_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."ai_chunks"
+    ADD CONSTRAINT "ai_chunks_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'ai_chunks_position_unique' AND conrelid = '"public"."ai_chunks"'::regclass)
+   AND to_regclass('"public"."ai_chunks_position_unique"') IS NULL THEN
+ALTER TABLE ONLY "public"."ai_chunks"
+    ADD CONSTRAINT "ai_chunks_position_unique" UNIQUE ("knowledge_source_id", "kb_version_id", "position");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'ai_faq_items_pkey' AND conrelid = '"public"."ai_faq_items"'::regclass)
+   AND to_regclass('"public"."ai_faq_items_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."ai_faq_items"
+    ADD CONSTRAINT "ai_faq_items_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'ai_invocations_pkey' AND conrelid = '"public"."ai_invocations"'::regclass)
+   AND to_regclass('"public"."ai_invocations_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."ai_invocations"
+    ADD CONSTRAINT "ai_invocations_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'ai_knowledge_sources_pkey' AND conrelid = '"public"."ai_knowledge_sources"'::regclass)
+   AND to_regclass('"public"."ai_knowledge_sources_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."ai_knowledge_sources"
+    ADD CONSTRAINT "ai_knowledge_sources_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'ai_knowledge_versions_pkey' AND conrelid = '"public"."ai_knowledge_versions"'::regclass)
+   AND to_regclass('"public"."ai_knowledge_versions_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."ai_knowledge_versions"
+    ADD CONSTRAINT "ai_knowledge_versions_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'ai_models_pkey' AND conrelid = '"public"."ai_models"'::regclass)
+   AND to_regclass('"public"."ai_models_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."ai_models"
+    ADD CONSTRAINT "ai_models_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'ai_models_unique' AND conrelid = '"public"."ai_models"'::regclass)
+   AND to_regclass('"public"."ai_models_unique"') IS NULL THEN
+ALTER TABLE ONLY "public"."ai_models"
+    ADD CONSTRAINT "ai_models_unique" UNIQUE ("provider", "model_id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'ai_pricing_pkey' AND conrelid = '"public"."ai_pricing"'::regclass)
+   AND to_regclass('"public"."ai_pricing_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."ai_pricing"
+    ADD CONSTRAINT "ai_pricing_pkey" PRIMARY KEY ("model");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'ai_provider_credentials_pkey' AND conrelid = '"public"."ai_provider_credentials"'::regclass)
+   AND to_regclass('"public"."ai_provider_credentials_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."ai_provider_credentials"
+    ADD CONSTRAINT "ai_provider_credentials_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'ai_provider_credentials_unique' AND conrelid = '"public"."ai_provider_credentials"'::regclass)
+   AND to_regclass('"public"."ai_provider_credentials_unique"') IS NULL THEN
+ALTER TABLE ONLY "public"."ai_provider_credentials"
+    ADD CONSTRAINT "ai_provider_credentials_unique" UNIQUE ("organization_id", "provider", "label");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'api_audit_log_pkey' AND conrelid = '"public"."api_audit_log"'::regclass)
+   AND to_regclass('"public"."api_audit_log_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."api_audit_log"
+    ADD CONSTRAINT "api_audit_log_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'api_tokens_organization_id_prefix_key' AND conrelid = '"public"."api_tokens"'::regclass)
+   AND to_regclass('"public"."api_tokens_organization_id_prefix_key"') IS NULL THEN
+ALTER TABLE ONLY "public"."api_tokens"
+    ADD CONSTRAINT "api_tokens_organization_id_prefix_key" UNIQUE ("organization_id", "prefix");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'api_tokens_pkey' AND conrelid = '"public"."api_tokens"'::regclass)
+   AND to_regclass('"public"."api_tokens_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."api_tokens"
+    ADD CONSTRAINT "api_tokens_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'channel_session_warmup_pkey' AND conrelid = '"public"."channel_session_warmup"'::regclass)
+   AND to_regclass('"public"."channel_session_warmup_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."channel_session_warmup"
+    ADD CONSTRAINT "channel_session_warmup_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'channel_sessions_phone_per_org_unique' AND conrelid = '"public"."channel_sessions"'::regclass)
+   AND to_regclass('"public"."channel_sessions_phone_per_org_unique"') IS NULL THEN
+ALTER TABLE ONLY "public"."channel_sessions"
+    ADD CONSTRAINT "channel_sessions_phone_per_org_unique" UNIQUE ("organization_id", "phone_number") DEFERRABLE INITIALLY DEFERRED;
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'channel_sessions_pkey' AND conrelid = '"public"."channel_sessions"'::regclass)
+   AND to_regclass('"public"."channel_sessions_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."channel_sessions"
+    ADD CONSTRAINT "channel_sessions_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'channel_sessions_waha_session_name_unique' AND conrelid = '"public"."channel_sessions"'::regclass)
+   AND to_regclass('"public"."channel_sessions_waha_session_name_unique"') IS NULL THEN
+ALTER TABLE ONLY "public"."channel_sessions"
+    ADD CONSTRAINT "channel_sessions_waha_session_name_unique" UNIQUE ("waha_session_name");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'channel_sessions_webhook_path_token_unique' AND conrelid = '"public"."channel_sessions"'::regclass)
+   AND to_regclass('"public"."channel_sessions_webhook_path_token_unique"') IS NULL THEN
+ALTER TABLE ONLY "public"."channel_sessions"
+    ADD CONSTRAINT "channel_sessions_webhook_path_token_unique" UNIQUE ("webhook_path_token");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'contacts_pkey' AND conrelid = '"public"."contacts"'::regclass)
+   AND to_regclass('"public"."contacts_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."contacts"
+    ADD CONSTRAINT "contacts_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'conversations_pkey' AND conrelid = '"public"."conversations"'::regclass)
+   AND to_regclass('"public"."conversations_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."conversations"
+    ADD CONSTRAINT "conversations_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'conversations_unique_per_contact_session' AND conrelid = '"public"."conversations"'::regclass)
+   AND to_regclass('"public"."conversations_unique_per_contact_session"') IS NULL THEN
+ALTER TABLE ONLY "public"."conversations"
+    ADD CONSTRAINT "conversations_unique_per_contact_session" UNIQUE ("organization_id", "contact_id", "channel_session_id", "group_chat_id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'crm_lead_activities_pkey' AND conrelid = '"public"."crm_lead_activities"'::regclass)
+   AND to_regclass('"public"."crm_lead_activities_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."crm_lead_activities"
+    ADD CONSTRAINT "crm_lead_activities_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'crm_lead_links_pkey' AND conrelid = '"public"."crm_lead_links"'::regclass)
+   AND to_regclass('"public"."crm_lead_links_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."crm_lead_links"
+    ADD CONSTRAINT "crm_lead_links_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'crm_leads_pkey' AND conrelid = '"public"."crm_leads"'::regclass)
+   AND to_regclass('"public"."crm_leads_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."crm_leads"
+    ADD CONSTRAINT "crm_leads_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'crm_pipelines_pkey' AND conrelid = '"public"."crm_pipelines"'::regclass)
+   AND to_regclass('"public"."crm_pipelines_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."crm_pipelines"
+    ADD CONSTRAINT "crm_pipelines_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'crm_stages_pkey' AND conrelid = '"public"."crm_stages"'::regclass)
+   AND to_regclass('"public"."crm_stages_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."crm_stages"
+    ADD CONSTRAINT "crm_stages_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'event_log_pkey' AND conrelid = '"public"."event_log"'::regclass)
+   AND to_regclass('"public"."event_log_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."event_log"
+    ADD CONSTRAINT "event_log_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'idempotency_keys_organization_id_key_endpoint_key' AND conrelid = '"public"."idempotency_keys"'::regclass)
+   AND to_regclass('"public"."idempotency_keys_organization_id_key_endpoint_key"') IS NULL THEN
+ALTER TABLE ONLY "public"."idempotency_keys"
+    ADD CONSTRAINT "idempotency_keys_organization_id_key_endpoint_key" UNIQUE ("organization_id", "key", "endpoint");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'idempotency_keys_pkey' AND conrelid = '"public"."idempotency_keys"'::regclass)
+   AND to_regclass('"public"."idempotency_keys_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."idempotency_keys"
+    ADD CONSTRAINT "idempotency_keys_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'incidents_pkey' AND conrelid = '"public"."incidents"'::regclass)
+   AND to_regclass('"public"."incidents_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."incidents"
+    ADD CONSTRAINT "incidents_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'lgpd_requests_pkey' AND conrelid = '"public"."lgpd_requests"'::regclass)
+   AND to_regclass('"public"."lgpd_requests_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."lgpd_requests"
+    ADD CONSTRAINT "lgpd_requests_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'merge_queue_pkey' AND conrelid = '"public"."merge_queue"'::regclass)
+   AND to_regclass('"public"."merge_queue_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."merge_queue"
+    ADD CONSTRAINT "merge_queue_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'messages_org_external_id_unique' AND conrelid = '"public"."messages"'::regclass)
+   AND to_regclass('"public"."messages_org_external_id_unique"') IS NULL THEN
+ALTER TABLE ONLY "public"."messages"
+    ADD CONSTRAINT "messages_org_external_id_unique" UNIQUE ("organization_id", "external_id") DEFERRABLE INITIALLY DEFERRED;
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'messages_pkey' AND conrelid = '"public"."messages"'::regclass)
+   AND to_regclass('"public"."messages_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."messages"
+    ADD CONSTRAINT "messages_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'nuvemshop_products_organization_id_external_id_key' AND conrelid = '"public"."nuvemshop_products"'::regclass)
+   AND to_regclass('"public"."nuvemshop_products_organization_id_external_id_key"') IS NULL THEN
+ALTER TABLE ONLY "public"."nuvemshop_products"
+    ADD CONSTRAINT "nuvemshop_products_organization_id_external_id_key" UNIQUE ("organization_id", "external_id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'nuvemshop_products_pkey' AND conrelid = '"public"."nuvemshop_products"'::regclass)
+   AND to_regclass('"public"."nuvemshop_products_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."nuvemshop_products"
+    ADD CONSTRAINT "nuvemshop_products_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'orders_organization_id_external_provider_external_id_key' AND conrelid = '"public"."orders"'::regclass)
+   AND to_regclass('"public"."orders_organization_id_external_provider_external_id_key"') IS NULL THEN
+ALTER TABLE ONLY "public"."orders"
+    ADD CONSTRAINT "orders_organization_id_external_provider_external_id_key" UNIQUE ("organization_id", "external_provider", "external_id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'orders_pkey' AND conrelid = '"public"."orders"'::regclass)
+   AND to_regclass('"public"."orders_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."orders"
+    ADD CONSTRAINT "orders_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'organizations_cnpj_key' AND conrelid = '"public"."organizations"'::regclass)
+   AND to_regclass('"public"."organizations_cnpj_key"') IS NULL THEN
+ALTER TABLE ONLY "public"."organizations"
+    ADD CONSTRAINT "organizations_cnpj_key" UNIQUE ("cnpj");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'organizations_pkey' AND conrelid = '"public"."organizations"'::regclass)
+   AND to_regclass('"public"."organizations_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."organizations"
+    ADD CONSTRAINT "organizations_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'organizations_slug_key' AND conrelid = '"public"."organizations"'::regclass)
+   AND to_regclass('"public"."organizations_slug_key"') IS NULL THEN
+ALTER TABLE ONLY "public"."organizations"
+    ADD CONSTRAINT "organizations_slug_key" UNIQUE ("slug");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'platform_admins_pkey' AND conrelid = '"public"."platform_admins"'::regclass)
+   AND to_regclass('"public"."platform_admins_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."platform_admins"
+    ADD CONSTRAINT "platform_admins_pkey" PRIMARY KEY ("user_id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'storage_redaction_queue_bucket_object_path_key' AND conrelid = '"public"."storage_redaction_queue"'::regclass)
+   AND to_regclass('"public"."storage_redaction_queue_bucket_object_path_key"') IS NULL THEN
+ALTER TABLE ONLY "public"."storage_redaction_queue"
+    ADD CONSTRAINT "storage_redaction_queue_bucket_object_path_key" UNIQUE ("bucket", "object_path");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'storage_redaction_queue_pkey' AND conrelid = '"public"."storage_redaction_queue"'::regclass)
+   AND to_regclass('"public"."storage_redaction_queue_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."storage_redaction_queue"
+    ADD CONSTRAINT "storage_redaction_queue_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'tenant_integrations_organization_id_provider_key' AND conrelid = '"public"."tenant_integrations"'::regclass)
+   AND to_regclass('"public"."tenant_integrations_organization_id_provider_key"') IS NULL THEN
+ALTER TABLE ONLY "public"."tenant_integrations"
+    ADD CONSTRAINT "tenant_integrations_organization_id_provider_key" UNIQUE ("organization_id", "provider");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'tenant_integrations_pkey' AND conrelid = '"public"."tenant_integrations"'::regclass)
+   AND to_regclass('"public"."tenant_integrations_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."tenant_integrations"
+    ADD CONSTRAINT "tenant_integrations_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'user_organizations_pkey' AND conrelid = '"public"."user_organizations"'::regclass)
+   AND to_regclass('"public"."user_organizations_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."user_organizations"
+    ADD CONSTRAINT "user_organizations_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'user_organizations_user_id_organization_id_key' AND conrelid = '"public"."user_organizations"'::regclass)
+   AND to_regclass('"public"."user_organizations_user_id_organization_id_key"') IS NULL THEN
+ALTER TABLE ONLY "public"."user_organizations"
+    ADD CONSTRAINT "user_organizations_user_id_organization_id_key" UNIQUE ("user_id", "organization_id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'user_recovery_codes_pkey' AND conrelid = '"public"."user_recovery_codes"'::regclass)
+   AND to_regclass('"public"."user_recovery_codes_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."user_recovery_codes"
+    ADD CONSTRAINT "user_recovery_codes_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'warmup_session_day_unique' AND conrelid = '"public"."channel_session_warmup"'::regclass)
+   AND to_regclass('"public"."warmup_session_day_unique"') IS NULL THEN
+ALTER TABLE ONLY "public"."channel_session_warmup"
+    ADD CONSTRAINT "warmup_session_day_unique" UNIQUE ("channel_session_id", "day");
+END IF; END $baseline_guard$;
+
+
+
+DO $baseline_guard$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'webhook_events_log_pkey' AND conrelid = '"public"."webhook_events_log"'::regclass)
+   AND to_regclass('"public"."webhook_events_log_pkey"') IS NULL THEN
+ALTER TABLE ONLY "public"."webhook_events_log"
+    ADD CONSTRAINT "webhook_events_log_pkey" PRIMARY KEY ("id");
+END IF; END $baseline_guard$;
+
+
+
+CREATE INDEX IF NOT EXISTS "ai_agent_runs_agent_idx" ON "public"."ai_agent_runs" USING "btree" ("agent_id", "started_at" DESC);
+
+
+
+CREATE UNIQUE INDEX IF NOT EXISTS "ai_agent_runs_one_running_per_conv" ON "public"."ai_agent_runs" USING "btree" ("conversation_id") WHERE (("status" = 'running'::"text") AND ("is_dry_run" = false));
+
+
+
+CREATE INDEX IF NOT EXISTS "ai_agent_runs_org_started_idx" ON "public"."ai_agent_runs" USING "btree" ("organization_id", "started_at" DESC);
+
+
+
+CREATE INDEX IF NOT EXISTS "ai_agent_runs_status_idx" ON "public"."ai_agent_runs" USING "btree" ("status", "started_at") WHERE ("status" = ANY (ARRAY['pending'::"text", 'running'::"text"]));
+
+
+
+CREATE INDEX IF NOT EXISTS "ai_agent_versions_agent_idx" ON "public"."ai_agent_versions" USING "btree" ("agent_id", "version_number" DESC);
+
+
+
+CREATE UNIQUE INDEX IF NOT EXISTS "ai_agents_one_default_per_org" ON "public"."ai_agents" USING "btree" ("organization_id") WHERE "is_default";
+
+
+
+CREATE INDEX IF NOT EXISTS "ai_agents_org_active_idx" ON "public"."ai_agents" USING "btree" ("organization_id") WHERE "is_active";
+
+
+
+CREATE INDEX IF NOT EXISTS "ai_agents_published_idx" ON "public"."ai_agents" USING "btree" ("organization_id", "priority" DESC) WHERE (("published_version_id" IS NOT NULL) AND ("archived_at" IS NULL));
+
+
+
+CREATE INDEX IF NOT EXISTS "ai_chunks_embedding_ivfflat_idx" ON "public"."ai_chunks" USING "ivfflat" ("embedding" "public"."vector_cosine_ops") WITH ("lists"='100');
+
+
+
+CREATE INDEX IF NOT EXISTS "ai_chunks_metadata_gin_idx" ON "public"."ai_chunks" USING "gin" ("metadata");
+
+
+
+CREATE INDEX IF NOT EXISTS "ai_chunks_org_kbv_idx" ON "public"."ai_chunks" USING "btree" ("organization_id", "kb_version_id");
+
+
+
+CREATE INDEX IF NOT EXISTS "ai_chunks_source_idx" ON "public"."ai_chunks" USING "btree" ("knowledge_source_id");
+
+
+
+CREATE INDEX IF NOT EXISTS "ai_faq_items_org_idx" ON "public"."ai_faq_items" USING "btree" ("organization_id");
+
+
+
+CREATE INDEX IF NOT EXISTS "ai_faq_items_source_idx" ON "public"."ai_faq_items" USING "btree" ("knowledge_source_id", "position");
+
+
+
+CREATE INDEX IF NOT EXISTS "ai_invocations_agent_kind_idx" ON "public"."ai_invocations" USING "btree" ("agent_id", "invocation_kind");
+
+
+
+CREATE INDEX IF NOT EXISTS "ai_invocations_conversation_idx" ON "public"."ai_invocations" USING "btree" ("conversation_id") WHERE ("conversation_id" IS NOT NULL);
+
+
+
+CREATE INDEX IF NOT EXISTS "ai_invocations_org_created_idx" ON "public"."ai_invocations" USING "btree" ("organization_id", "created_at" DESC);
+
+
+
+CREATE INDEX IF NOT EXISTS "ai_knowledge_sources_agent_idx" ON "public"."ai_knowledge_sources" USING "btree" ("agent_id", "is_active");
+
+
+
+CREATE UNIQUE INDEX IF NOT EXISTS "ai_models_one_default_pe…212152 tokens truncated…
+  if a.contact_id is null then raise exception 'meet_conversation_unavailable' using errcode='42501';end if;
+  select channel_session_id into destination_channel from public.conversations where organization_id=p_org and id=p_conversation and contact_id=a.contact_id and not is_group and public.fn_can_view_conversation(organization_id,assigned_to_user_id) for update;
+  if not found then raise exception 'meet_conversation_unavailable' using errcode='42501';end if;
+  b:=public.fn_service_boundary(p_org,p_conversation)-'status'-'demanda_fechada_em'-'service_started_at';
+  if not public.fn_meet_boundary_current(b) then raise exception 'meet_conversation_stale' using errcode='PT409';end if;
+  if a.meeting_delivery->'service_boundary'=b and a.meeting_delivery->>'channel_session_id'=destination_channel::text then
+   -- ⛔ ESTE `return false` É A PROTEÇÃO CONTRA CLIQUE DUPLO, e é por isso que o
+   -- reenvio é uma AÇÃO NOVA em vez de um ramo reescrito. Ele impede a mesma
+   -- mensagem de sair duas vezes por um clique nervoso; se o botão "Enviar de
+   -- novo" apenas reescrevesse este ramo, ganharíamos o reenvio e perderíamos a
+   -- proteção — e envio em dobro para cliente é pior que não-envio.
+   -- `deliver` continua exatamente como era; `resend` passa reto, e quem o
+   -- dispara já confirmou na tela.
+   if p_action='deliver' and a.meeting_delivery->>'state' in ('waiting_for_link','sent') then return false;end if;
+   if a.meeting_delivery->>'state'='queued' and a.meeting_delivery_job_id is not null then
+    -- Recuperação humana de job morto conserva ledger/identidade. Não duplicar
+    -- uma mensagem aceita antes do crash nem reconstruir fronteira antiga.
+    update public.job_queue set status='pending',locked_by=null,locked_at=null,attempts=0,run_after=now(),last_error=null
+     where organization_id=p_org and id=a.meeting_delivery_job_id and kind='transactional_delivery' and status in ('dead','failed','done');
+    return found;
+   end if;
+  end if;
+  update public.job_queue set status='failed',locked_by=null,locked_at=null,last_error='meet_delivery_superseded' where organization_id=p_org and id=a.meeting_delivery_job_id and kind='transactional_delivery' and status in ('pending','running');
+  update public.calendar_appointments set meeting_delivery=jsonb_build_object('state','waiting_for_link','generation',gen_random_uuid(),'service_boundary',b,'authorized_by',jsonb_build_object('kind','user','id',auth.uid()),'source_operation_id',gen_random_uuid()),meeting_delivery_job_id=null where organization_id=p_org and id=p_id;
+ else raise exception 'meet_action_invalid' using errcode='22023';end if;
+ return true;
+end;$$;
+
+create or replace function public.fn_meet_delivery_enqueue()
+returns trigger language plpgsql security definer set search_path=public as $$
+declare jid uuid; b jsonb;
+begin
+ -- A MESMA ORDEM DE TRAVA das ~20 irmãs: contato PRIMEIRO, job_queue depois.
+ -- Sem esta linha, este gatilho já segurava a linha do compromisso (é BEFORE/
+ -- AFTER na própria calendar_appointments) e ia travar job_queue sem o mutex do
+ -- contato, enquanto fn_meet_redact_contact (0229) pega o mutex do contato e só
+ -- então mexe em job_queue. Duas ordens opostas sobre os mesmos dois recursos =
+ -- deadlock (40P01) sob concorrência, e quem paga é o cliente com anonimização
+ -- LGPD acontecendo enquanto um link de reunião é entregue.
+ perform public.fn_service_lock(new.organization_id,new.contact_id);
+ -- ⚠️ `status` ENTRA AQUI, e a falta dele era um buraco REAL que só apareceu
+ -- ao abrir a entrega para compromisso sem Meet.
+ --
+ -- A guarda olhava só `meeting_state='cancelled'` — o estado do LINK, não do
+ -- compromisso. Enquanto a entrega exigia link pronto isso bastava por
+ -- acidente: cancelar o compromisso cancelava o link junto. Sem Meet não há
+ -- link para cancelar, e um compromisso CANCELADO passava a enfileirar
+ -- entrega. O porteiro do envio recusaria depois (`a.status<>'cancelled'`),
+ -- então o cliente não receberia nada — mas o job nasceria para morrer
+ -- bloqueado, e a tela mostraria uma entrega a caminho que nunca sai.
+ --
+ -- Achado do @paulolimajr77, e foi o teste DELE que o pegou aqui.
+ if new.status='cancelled' or new.meeting_state='cancelled' or new.meeting_delivery->>'state' in ('blocked','stale') then
+  update public.job_queue set status='failed',locked_at=null,locked_by=null,payload='{}',last_error='meet_delivery_stale'
+   where organization_id=new.organization_id and id=new.meeting_delivery_job_id and kind='transactional_delivery' and status in ('pending','running');
+  return new;
+ end if;
+ if new.meeting_state='failed' then perform public.fn_meet_notice(new.organization_id,new.id,'meeting_failed');end if;
+ -- ⛔ ESPERAR O LINK VALE SÓ ONDE O LOCAL É O MEET.
+ --
+ -- Esta é a exigência mais fácil de esquecer e a pior de esquecer: num
+ -- compromisso PRESENCIAL o `meeting_state` é `not_requested` para sempre,
+ -- então a entrega era autorizada, o gatilho passava por aqui, devolvia sem
+ -- enfileirar nada, e a entrega ficava em `waiting_for_link` PARA SEMPRE — em
+ -- silêncio, sem job, sem aviso e sem erro. Foi o teste do autor que a achou.
+ --
+ -- Onde o local É o Meet, nada muda: sem link pronto não sai job, porque
+ -- mandar uma reunião sem como entrar nela é pior que não mandar.
+ if (new.location_kind='google_meet' and new.meeting_state<>'ready')
+  or new.meeting_delivery->>'state'<>'waiting_for_link' then return new;end if;
+ b:=new.meeting_delivery->'service_boundary';
+ if not public.fn_meet_boundary_current(b) then
+  update public.calendar_appointments set meeting_delivery=meeting_delivery||'{"state":"stale","error":"service_boundary_stale"}' where organization_id=new.organization_id and id=new.id;
+  perform public.fn_meet_notice(new.organization_id,new.id,'service_boundary_stale');return new;
+ end if;
+ jid:=gen_random_uuid();
+ insert into public.job_queue(id,organization_id,contact_id,kind,payload,run_after)
+ values(jid,new.organization_id,new.contact_id,'transactional_delivery',jsonb_build_object('appointment_id',new.id,'meeting_request_id',new.meeting_request_id,
+  'delivery_generation',new.meeting_delivery->>'generation','service_boundary',b),now());
+ update public.calendar_appointments set meeting_delivery_job_id=jid,meeting_delivery=meeting_delivery||'{"state":"queued"}'
+  where organization_id=new.organization_id and id=new.id;
+ return new;
+end;$$;
+revoke all on function public.fn_meet_delivery_enqueue() from public,anon,authenticated;
+
+
+
+-- APÊNDICE 20260921030000_0368_redes_sociais_nativas.sql
+-- Social connections reuse channel sessions, the inbox and the outbound ledger.
+-- Credentials are server-only; tenant admins use authenticated API routes.
+create table if not exists public.channel_integrations (
+  organization_id uuid primary key references public.organizations(id) on delete cascade,
+  profile_id text not null,
+  credential_encrypted bytea not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+alter table public.channel_integrations enable row level security;
+revoke all on public.channel_integrations from public, anon, authenticated;
+grant all on public.channel_integrations to service_role;
+alter table public.contacts add column if not exists social_identity text;
+-- A ficha MESCLADA fica de fora do índice: depois de juntar dois contatos, o
+-- perdedor continua na tabela com `is_merged_into` apontando para o vencedor, e
+-- os dois carregam a mesma identidade social. Sem esta guarda, a junção passa a
+-- falhar com violação de unicidade — e quem junta é o operador, na tela.
+create unique index if not exists contacts_org_social_identity_unique
+  on public.contacts (organization_id, social_identity)
+  where social_identity is not null and is_merged_into is null;
+comment on column public.contacts.social_identity is
+  'Opaque network/account/participant key. Never interpreted as a telephone or WhatsApp identity.';
+
+-- As duas CHECKs de `channel_sessions` que o provider novo exige NÃO estão
+-- aqui: elas ficam no bloco "provider zernio_social entra nos CHECKs"
+-- (ABAIXO, logo antes da varredura de anon), porque precisam vir DEPOIS da
+-- definição que o dump traz — a última definição é a que vale. Esta linha
+-- afirmava o contrário ("incluídas no bloco único acima") e era falsa: o
+-- apêndice não tocava constraint nenhuma, e toda VPS de cliente batia 23514 na
+-- primeira conexão de rede social.
+alter table public.conversations drop constraint if exists conversations_channel_check;
+alter table public.conversations add constraint conversations_channel_check
+  check (channel in ('whatsapp', 'instagram', 'facebook'));
+
+
+-- APÊNDICE 20260921030100_0369_prospeccao_nativa.sql
+-- Native prospecting is an adapter to discovery, CRM creation and existing AI delivery.
+-- Server-only tables: authenticated routes resolve the tenant and authorize every command.
+create table if not exists public.prospecting_settings (
+  organization_id uuid primary key references public.organizations(id) on delete cascade,
+  credential_encrypted bytea not null,
+  updated_at timestamptz not null default now()
+);
+create table if not exists public.prospecting_campaigns (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  request_id uuid not null,
+  name text not null,
+  search jsonb not null,
+  config jsonb,
+  status text not null default 'draft' check (status in ('draft','running','paused','completed')),
+  search_status text not null default 'starting' check (search_status in ('starting','running','succeeded','failed','unknown')),
+  run_id text,
+  dataset_id text,
+  cost_usd numeric,
+  result_count integer not null default 0,
+  skipped_count integer not null default 0,
+  error text,
+  next_send_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (organization_id, id),
+  unique (organization_id, request_id)
+);
+create unique index if not exists prospecting_one_running_org on public.prospecting_campaigns(organization_id) where status='running';
+create table if not exists public.prospecting_candidates (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  campaign_id uuid not null,
+  place_id text not null,
+  phone text,
+  data jsonb not null,
+  status text not null default 'new' check (status in ('new','queued','sending','sent','skipped','failed')),
+  contact_id uuid references public.contacts(id) on delete set null,
+  lead_id uuid references public.crm_leads(id) on delete set null,
+  conversation_id uuid references public.conversations(id) on delete set null,
+  service_boundary jsonb,
+  message_id uuid not null default gen_random_uuid(),
+  attempted_at timestamptz,
+  error text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  foreign key (organization_id, campaign_id) references public.prospecting_campaigns(organization_id,id) on delete cascade,
+  unique (organization_id, place_id)
+);
+create unique index if not exists prospecting_phone_once_org on public.prospecting_candidates(organization_id,phone) where phone is not null;
+create index if not exists prospecting_pending_campaign on public.prospecting_candidates(organization_id,campaign_id,status);
+create index if not exists prospecting_conversation on public.prospecting_candidates(organization_id,conversation_id) where conversation_id is not null;
+alter table public.prospecting_settings enable row level security;
+alter table public.prospecting_campaigns enable row level security;
+alter table public.prospecting_candidates enable row level security;
+revoke all on public.prospecting_settings, public.prospecting_campaigns, public.prospecting_candidates from public, anon, authenticated;
+grant all on public.prospecting_settings, public.prospecting_campaigns, public.prospecting_candidates to service_role;
+notify pgrst, 'reload schema';
+
+-- Migration 0370: native prospecting redaction and suppression
+-- 0370: Redact discovery data through the canonical contact cascade.
+-- Suppression tokens are pseudonymous, server-only and used exclusively to
+-- refuse re-import. The API explicitly selects public fields and never exposes them.
+alter table public.prospecting_candidates add column if not exists suppression_salt bytea;
+alter table public.prospecting_candidates add column if not exists suppression_place bytea;
+alter table public.prospecting_candidates add column if not exists suppression_phone bytea;
+create index if not exists prospecting_suppressed_org
+  on public.prospecting_candidates(organization_id) where suppression_salt is not null;
+
+create or replace function public.fn_prospecting_refuse_erased_candidate()
+returns trigger language plpgsql security definer
+set search_path = public, extensions, pg_temp as $$
+begin
+  if exists (
+    select 1 from public.prospecting_candidates p
+    where p.organization_id = new.organization_id and p.suppression_salt is not null
+      and (p.suppression_place = hmac(convert_to(new.place_id, 'UTF8'), p.suppression_salt, 'sha256')
+        or (new.phone is not null and p.suppression_phone = hmac(convert_to(new.phone, 'UTF8'), p.suppression_salt, 'sha256')))
+  ) then
+    return null;
+  end if;
+  return new;
+end;
+$$;
+revoke all on function public.fn_prospecting_refuse_erased_candidate() from public, anon, authenticated;
+grant execute on function public.fn_prospecting_refuse_erased_candidate() to service_role;
+drop trigger if exists prospecting_refuse_erased on public.prospecting_candidates;
+create trigger prospecting_refuse_erased before insert on public.prospecting_candidates
+  for each row execute function public.fn_prospecting_refuse_erased_candidate();
+
+-- ---- as duas grafias do nono dígito, em UM lugar ----
+--
+-- Mesma regra de `lib/channels/phone-variants.ts`, e o SQL dela já existia
+-- COPIADO dentro de `fn_aviso_de_caso_*`. Uma terceira cópia é como regra de
+-- telefone diverge: alguém corrige uma e não sabe das outras. Aqui ela vira
+-- função, e o expurgo de LGPD abaixo é o primeiro a consumi-la.
+--
+-- Por que comparar por VARIANTE e não pela string: o mesmo celular é gravado
+-- com e sem o nono dígito por caminhos diferentes (cadastro à mão, importação,
+-- o que o WhatsApp devolve). Comparar a string crua deixa a pessoa no banco
+-- porque uma ponta tem um `9` a mais — e, em expurgo, não alcançar é violação.
+--
+-- A direção que REMOVE o nono confere o que sobra (`6-9` na primeira posição),
+-- como o TypeScript faz: sem isso, um `9` grudado num fixo geraria o número
+-- REAL de outra pessoa, e alcançar terceiro em expurgo é o erro oposto.
+create or replace function public.fn_telefone_variantes(p_telefone text)
+returns text[]
+language sql
+immutable
+set search_path to 'public', 'pg_temp'
+as $$
+  with d as (select regexp_replace(coalesce(p_telefone, ''), '\D', '', 'g') as v)
+  select case
+    when d.v = '' then array[]::text[]
+    when d.v not like '55%' then array[d.v]
+    when length(d.v) = 13
+         and substring(d.v from 5 for 1) = '9'
+         and substring(d.v from 6 for 1) between '6' and '9'
+      then array[d.v, substring(d.v from 1 for 4) || substring(d.v from 6)]
+    when length(d.v) = 12
+         and substring(d.v from 5 for 1) between '6' and '9'
+      then array[d.v, substring(d.v from 1 for 4) || '9' || substring(d.v from 5)]
+    else array[d.v]
+  end
+  from d;
+$$;
+-- Função nova em `public` nasce alcançável pelas DUAS origens (o grant a PUBLIC
+-- que o Postgres dá, e o default privilege do baseline para `anon`): as duas
+-- saem, e só quem precisa entra.
+revoke execute on function public.fn_telefone_variantes(text) from public, anon;
+grant execute on function public.fn_telefone_variantes(text) to service_role;
+
+CREATE OR REPLACE FUNCTION "public"."fn_lgpd_cascade_redact_contact"("p_organization_id" "uuid", "p_contact_id" "uuid", "p_request_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'extensions', 'pg_temp'
+    AS $$
+declare
+  v_already bool;
+  v_counts jsonb := '{}'::jsonb;
+  v_media_paths text[] := '{}';
+  v_anon_label text;
+  v_count int;
+  -- As grafias do telefone desta pessoa, capturadas ANTES de o passo 1 zerar
+  -- `contacts.phone_number`. A ordem aqui não é detalhe: o expurgo da
+  -- prospecção roda ~150 linhas depois do `update contacts`, e ler o telefone
+  -- lá embaixo leria NULL — o braço por telefone existiria no código e não
+  -- alcançaria linha nenhuma, que é pior que não existir, porque parece feito.
+  v_variantes text[] := '{}';
+begin
+  perform public.fn_service_lock(p_organization_id,p_contact_id);
+  select is_anonymized into v_already
+    from contacts
+    where id = p_contact_id and organization_id = p_organization_id;
+
+  if not found then
+    raise exception 'contact not found' using errcode = 'P0002';
+  end if;
+
+  if v_already then
+    return jsonb_build_object('already_anonymized', true, 'counts', v_counts, 'media_paths', v_media_paths);
+  end if;
+
+  v_anon_label := 'Cliente Anonimizado #' || substring(p_contact_id::text from 1 for 8);
+
+  -- Capturado AGORA, enquanto o telefone ainda existe (o passo 1 o apaga).
+  select coalesce(public.fn_telefone_variantes(phone_number), '{}')
+    into v_variantes
+    from contacts
+    where id = p_contact_id and organization_id = p_organization_id;
+
+  -- Collect media storage paths (we only delete what we own — media_storage_path)
+  select coalesce(array_agg(distinct media_storage_path) filter (where media_storage_path is not null), '{}')
+    into v_media_paths
+    from messages
+    where organization_id = p_organization_id
+      and conversation_id in (
+        select id from conversations
+          where contact_id = p_contact_id and organization_id = p_organization_id
+      );
+
+  -- 1. contacts (irreversible)
+  update contacts set
+    name = v_anon_label,
+    display_name = v_anon_label,
+    email = null,
+    -- email_normalized NÃO entra: é GENERATED ALWAYS AS (lower(trim(email)))
+    -- e o Postgres recusa escrita nela — a linha acima já a zera por derivação.
+    -- Com a atribuição, o cascade INTEIRO abortava e nada era anonimizado.
+    phone_number = null,
+    cpf_encrypted = null,
+    cpf_hash = null,
+    birthdate = null,
+    is_anonymized = true,
+    anonymized_at = now(),
+    consent = '{}'::jsonb,
+    source_metadata = '{}'::jsonb,
+    tags = '{}'::text[],
+    updated_at = now()
+  where id = p_contact_id and organization_id = p_organization_id;
+  get diagnostics v_count = row_count;
+  v_counts := v_counts || jsonb_build_object('contacts', v_count);
+
+  -- 2. conversations metadata + preview strip
+  update conversations set
+    metadata = '{}'::jsonb,
+    last_message_preview = null,
+    -- O motivo CRU da última passagem (migration 0291). É código de
+    -- vocabulário, não texto livre — mas ele diz que ESTA pessoa foi escalada
+    -- por irritação, por assunto jurídico ou por suspeita de opt-out, e isso é
+    -- um fato sobre ela. Entra NESTE update, e não num segundo: mesmo
+    -- predicado, mesmas linhas, metade das varreduras.
+    --
+    -- ⚠️ `last_handoff_reason` é CHAVE DE NEGÓCIO em outro módulo: a ponte de
+    -- voz limpa o silêncio filtrando pelo VALOR da coluna
+    -- (`lib/wacalls/events-bridge.ts`). Zerá-la num contato anonimizado é
+    -- seguro — não há chamada viva de contato anonimizado — e é a razão de
+    -- esta entrega NÃO usar essa coluna para texto rico: ela continua
+    -- recebendo só o código, e o texto vive em `passagens_de_atendimento`.
+    last_handoff_reason = null,
+    updated_at = now()
+  where contact_id = p_contact_id and organization_id = p_organization_id;
+  get diagnostics v_count = row_count;
+  v_counts := v_counts || jsonb_build_object('conversations', v_count);
+
+  -- 3. messages: redact body + null media + strip metadata (preserve status/timestamps/conversation_id)
+  update messages set
+    body = '[mensagem anonimizada]',
+    media_url = null,
+    media_mime = null,
+    media_size_bytes = null,
+    media_storage_path = null,
+    metadata = '{}'::jsonb,
+    updated_at = now()
+  where organization_id = p_organization_id
+    and conversation_id in (
+      select id from conversations
+        where contact_id = p_contact_id and organization_id = p_organization_id
+    );
+  get diagnostics v_count = row_count;
+  v_counts := v_counts || jsonb_build_object('messages', v_count);
+
+  -- 4. crm_lead_activities — strip payload, metadata E reason (migration 0071).
+  --    `reason` é texto livre escrito por LLM sobre a conversa do lead: supor que
+  --    nunca conterá um nome é a suposição que falha. `evidence` NÃO é limpa —
+  --    guarda só ids, e as linhas apontadas são redigidas por conta própria.
+  update crm_lead_activities set
+    payload = '{}'::jsonb,
+    metadata = '{}'::jsonb,
+    reason = null
+  where organization_id = p_organization_id
+    and (
+      contact_id = p_contact_id
+      or lead_id in (
+        select lead_id from crm_lead_links
+          where target_kind = 'contact'
+            and target_id = p_contact_id
+            and organization_id = p_organization_id
+      )
+      or lead_id in (
+        select id from crm_leads
+          where contact_id = p_contact_id and organization_id = p_organization_id
+      )
+    );
+  get diagnostics v_count = row_count;
+  v_counts := v_counts || jsonb_build_object('activities', v_count);
+
+  -- 5. crm_leads — strip title/description/custom_fields/source_metadata/tags but PRESERVE pipeline/stage/value
+  update crm_leads set
+    title = v_anon_label,
+    description = null,
+    custom_fields = '{}'::jsonb,
+    source_metadata = '{}'::jsonb,
+    tags = '{}'::text[],
+    updated_at = now()
+  where organization_id = p_organization_id
+    and (
+      contact_id = p_contact_id
+      or id in (
+        select lead_id from crm_lead_links
+          where target_kind = 'contact'
+            and target_id = p_contact_id
+            and organization_id = p_organization_id
+      )
+    );
+  get diagnostics v_count = row_count;
+  v_counts := v_counts || jsonb_build_object('leads', v_count);
+
+  -- 6. orders — PRESERVE values + status + timestamps. Strip personal fields from payload jsonb
+  --    and replace customer_external_id with null (FK-safe; soft de-link). Keep contact_id null.
+  update orders set
+    payload = (coalesce(payload, '{}'::jsonb))
+      - 'customer'
+      - 'customer_name'
+      - 'customer_email'
+      - 'customer_phone'
+      - 'shipping_address'
+      - 'billing_address'
+      - 'contact_identification',
+    customer_external_id = null,
+    contact_id = null,
+    is_anonymized = true,
+    updated_at = now()
+  where organization_id = p_organization_id
+    and contact_id = p_contact_id;
+  get diagnostics v_count = row_count;
+  v_counts := v_counts || jsonb_build_object('orders', v_count);
+  -- REAPLICADO AO DERIVAR ESTE APÊNDICE (merge da main, 0359 comanda).
+  -- O Postgres troca o corpo INTEIRO num `create or replace`: um apêndice
+  -- escrito sobre uma versão anterior da função APAGA, em silêncio, o passo
+  -- que outra entrega acrescentou. Anonimizar devolveria SUCESSO com o texto
+  -- da comanda ainda legível — e o SLA marcado como cumprido.
+  -- 6b. sales — a comanda. PRESERVA valor, status e datas, e NÃO desliga o
+  --     contato: a venda é registro financeiro (e fiscal) da organização, e
+  --     desligá-la do contato faria o relatório por cliente deixar de fechar
+  --     com o faturamento do período — divergência muda, meses depois, num
+  --     número que ninguém consegue reconciliar. O contato apontado já é
+  --     `Cliente Anonimizado #N`; o que sai daqui é o TEXTO LIVRE, que é onde
+  --     a pessoa é nomeada de novo ("cliente da Ana, filha da Dona Maria").
+  --     Os itens (`sale_items`) não entram: `description` ali é o nome do
+  --     SERVIÇO, congelado na inclusão, e apagá-lo destruiria o relatório por
+  --     serviço sem tirar dado de pessoa nenhum.
+  update sales set
+    notes = null,
+    cancel_reason = case when cancel_reason is null then null else '[redigido]' end,
+    reverse_reason = case when reverse_reason is null then null else '[redigido]' end,
+    updated_at = now()
+  where organization_id = p_organization_id
+    and contact_id = p_contact_id;
+  get diagnostics v_count = row_count;
+  v_counts := v_counts || jsonb_build_object('sales', v_count);
+
+  -- 7. enqueue media for async deletion (idempotent via unique (bucket, object_path))
+  if array_length(v_media_paths, 1) > 0 then
+    insert into storage_redaction_queue (organization_id, request_id, bucket, object_path)
+    select p_organization_id, p_request_id, 'whatsapp-media', path
+      from unnest(v_media_paths) as path
+      where path is not null and length(path) > 0
+    on conflict (bucket, object_path) do nothing;
+  end if;
+
+  -- 7b. voice_calls — o TELEFONE de quem falou ao telefone (migration 0235).
+  --
+  -- `peer_phone` é `not null` e guarda o número da outra ponta: depois de
+  -- anonimizar o contato, ele sobrevivia ligado ao `contact_id` e reidentificava
+  -- a pessoa que pediu para ser esquecida. É o mesmo argumento que a foto de
+  -- perfil já tinha (ver o bloco do avatar em `lib/lgpd/redact-cascade.ts`):
+  -- anonimizar em toda parte menos numa é não ter anonimizado.
+  --
+  -- O que fica: direção, status, motivo do fim, marcas de tempo e duração. Um
+  -- registro de "houve uma chamada de 12 minutos" sem número e sem dono não
+  -- identifica ninguém e é o que sustenta a métrica do atendente e a fatura.
+  -- `peer_phone` é NOT NULL, então recebe o rótulo, não `null`.
+  update voice_calls set
+    peer_phone = v_anon_label,
+    owner_user_id = null,
+    created_by = null,
+    updated_at = now()
+  where organization_id = p_organization_id
+    and contact_id = p_contact_id;
+  get diagnostics v_count = row_count;
+  v_counts := v_counts || jsonb_build_object('voice_calls', v_count);
+
+  -- Native discovery stores commercial/person data before the Inbox exists.
+  -- Keep only keyed suppression tokens, restricted to the server, to prevent
+  -- another extraction from reintroducing this erased candidate.
+  --
+  -- O PREDICADO ALCANÇA POR VÍNCULO **OU** POR TELEFONE, e o segundo braço é o
+  -- que conserta um buraco real: quando o telefone raspado já pertencia a um
+  -- contato conhecido da organização, `lib/prospecting/store.ts` grava o
+  -- candidato como `skipped` e DEIXA `contact_id` nulo de propósito (lá o
+  -- vínculo é o freio de mão do envio, em `worker.ts`). Só pelo `contact_id`,
+  -- essa pessoa — justamente a que a empresa já conhece — pedia exclusão,
+  -- recebia sucesso, a auditoria gravava `lgpd.redact_executed`, e o nome, o
+  -- telefone e o endereço dela seguiam legíveis aqui.
+  --
+  -- Em expurgo os dois erros não têm o mesmo preço: alcançar demais custa um
+  -- registro de prospecção descartado; alcançar de menos é violação legal. Por
+  -- isso o `or`, e por isso a comparação por VARIANTE do nono dígito.
+  update prospecting_candidates set suppression_salt = gen_random_bytes(32)
+  where organization_id = p_organization_id
+    and (contact_id = p_contact_id
+         or (phone is not null
+             and regexp_replace(phone, '\D', '', 'g') = any (v_variantes)))
+    and suppression_salt is null;
+  update prospecting_candidates set
+    suppression_place = hmac(convert_to(place_id, 'UTF8'), suppression_salt, 'sha256'),
+    suppression_phone = case when phone is null then null
+      else hmac(convert_to(phone, 'UTF8'), suppression_salt, 'sha256') end,
+    place_id = 'redacted:' || id::text,
+    phone = null,
+    data = jsonb_build_object('key', 'redacted:' || id::text,
+      'name', v_anon_label, 'phone', null, 'website', null,
+      'category', null, 'address', null, 'maps_url', null,
+      'rating', null, 'reviews', null, 'emails', '[]'::jsonb, 'socials', '[]'::jsonb),
+    status = 'skipped', service_boundary = null, error = null, updated_at = now()
+  -- MESMO predicado do bloco anterior. Se os dois divergirem, a linha alcançada
+  -- por um e não pelo outro fica com `suppression_salt` semeado e os dados
+  -- pessoais intactos — um estado que parece tratado e não está.
+  where organization_id = p_organization_id
+    and (contact_id = p_contact_id
+         or (phone is not null
+             and regexp_replace(phone, '\D', '', 'g') = any (v_variantes)));
+  get diagnostics v_count = row_count;
+  v_counts := v_counts || jsonb_build_object('prospecting_candidates', v_count);
+
+
+  -- agent_cases — o que a IA escreveu SOBRE a pessoa quando travou (migration 0280).
+  --
+  -- O caso é o texto que a equipe lê antes de decidir: `title`, `summary` e
+  -- `blocker` saem do modelo a partir da conversa, e `context_snapshot` é o
+  -- recorte dessa conversa que o motor mandou para ele. Nada disso é registro de
+  -- operação — é o relato do problema de uma pessoa identificável, escrito por
+  -- máquina. Sem este passo, anonimizar devolvia SUCESSO com o relato intacto.
+  --
+  -- As três colunas de texto são `not null`: recebem rótulo e texto fixo, nunca
+  -- `null` (a mesma razão de `voice_calls.peer_phone` logo acima).
+  --
+  -- ⚠️ `updated_at` FICA FORA DO `set`, de propósito. O cobrador de caso parado
+  -- (`app/api/v1/cron/case-stale-watcher/route.ts`) lê `updated_at` como "alguém
+  -- da equipe encostou neste caso". A cascata não é alguém encostando: escrever
+  -- ali faria a anonimização ADIAR a cobrança de um caso que continua parado, e
+  -- o efeito só apareceria como um cliente esperando mais tempo.
+  --
+  -- O vínculo é pela CONVERSA porque `agent_cases` não tem FK para `contacts`.
+  update agent_cases set
+    title = v_anon_label,
+    summary = '[resumo anonimizado]',
+    blocker = '[bloqueio anonimizado]',
+    context_snapshot = '{}'::jsonb
+  where organization_id = p_organization_id
+    and conversation_id in (
+      select id from conversations
+        where contact_id = p_contact_id and organization_id = p_organization_id
+    );
+  get diagnostics v_count = row_count;
+  v_counts := v_counts || jsonb_build_object('agent_cases', v_count);
+
+  -- agent_case_events — a linha do tempo do caso (migration 0280).
+  --
+  -- `body` é o que a pessoa da equipe escreveu ao responder o caso e o que o
+  -- agente registrou sobre o que o LEAD respondeu; `metadata` carrega o recorte
+  -- que o motor anexou. `kind`, `actor_kind`, `human_action` e `created_at`
+  -- FICAM: são o registro de que houve um toque humano e quando — operação, não
+  -- dado da pessoa, e é deles que sai a métrica de atendimento.
+  update agent_case_events set
+    body = null,
+    metadata = '{}'::jsonb
+  where organization_id = p_organization_id
+    and case_id in (
+      select id from agent_cases
+        where organization_id = p_organization_id
+          and conversation_id in (
+            select id from conversations
+              where contact_id = p_contact_id and organization_id = p_organization_id
+          )
+    );
+  get diagnostics v_count = row_count;
+  v_counts := v_counts || jsonb_build_object('agent_case_events', v_count);
+
+  -- demandas — o assunto do pedido (migration 0280).
+  --
+  -- `assunto` é texto livre sobre o que a pessoa pediu. O resto da linha é a
+  -- operação da demanda (origem, estado, dono, prazo, desfecho) e fica de pé:
+  -- apagar a linha inteira tiraria da organização a resposta a "quantos pedidos
+  -- houve em março", que é o mesmo argumento do compromisso da agenda.
+  --
+  -- FK direta (`demandas.contact_id` é `not null`), então o vínculo é o contato.
+  update demandas set
+    assunto = null
+  where organization_id = p_organization_id
+    and contact_id = p_contact_id;
+  get diagnostics v_count = row_count;
+  v_counts := v_counts || jsonb_build_object('demandas', v_count);
+
+  -- agent_inbox_items — o aviso que leva o texto do caso para a Central (migration 0280).
+  --
+  -- O `body` do aviso de caso parado EMBUTE o título do caso
+  -- (`app/api/v1/cron/case-stale-watcher/route.ts:128`), e o do handoff embute o
+  -- motivo da parada (`lib/ai/handoff/orchestrator.ts:335`). Redigir o caso e
+  -- deixar o aviso de pé seria anonimizar em toda parte menos numa — que é não
+  -- ter anonimizado. O molde (resolver + trocar o corpo + soltar a referência) é
+  -- o de `fn_meet_redact_contact`, que já faz isto para o aviso de compromisso.
+  --
+  -- ⚠️ O VÍNCULO É POLIMÓRFICO E TEM TRÊS BRAÇOS, não dois. Medido nos
+  -- produtores, não suposto: `handoff` nasce com `ref_kind='contact'`
+  -- (`lib/ai/handoff/orchestrator.ts:339`) E com `ref_kind='conversation'`
+  -- (`lib/agent-engine/agent/inbound-turn.ts:4100`); `case_stale` nasce SEMPRE
+  -- com `ref_kind='agent_case'` (a rota do cron acima, e a política em
+  -- `lib/ai/inbox-destino.ts:38`). Um predicado com só os dois primeiros braços
+  -- casa ZERO avisos de caso parado — e casar zero linha não é erro: é sucesso
+  -- com o texto intacto.
+  --
+  -- Os `kind` são os MEDIDOS no CHECK vigente (`supabase/baseline.sql`, bloco
+  -- único de `agent_inbox_items_kind_check`). `case_opened` NÃO existe, e kind
+  -- inexistente num `in (...)` também casa zero e devolve sucesso. Para
+  -- reconferir sem acreditar nesta prosa:
+  --   grep -n "agent_inbox_items_kind_check check" -A40 supabase/baseline.sql
+  update agent_inbox_items set
+    status = 'resolved',
+    resolved_at = now(),
+    body = 'Contato anonimizado.',
+    ref_id = null
+  where organization_id = p_organization_id
+    -- `aviso_de_caso_nao_entregue` (migration 0292) entra AQUI e não num
+    -- passo próprio: é o mesmo predicado polimórfico, e o braço
+    -- `ref_kind='agent_case'` já alcança o caso do titular. O corpo do aviso
+    -- embute o título do caso, que é texto sobre a pessoa.
+    and kind in ('handoff', 'case_stale', 'aviso_de_caso_nao_entregue')
+    and (
+      (ref_kind = 'contact' and ref_id = p_contact_id)
+      or (ref_kind = 'conversation' and ref_id in (
+            select id from conversations
+              where contact_id = p_contact_id and organization_id = p_organization_id
+          ))
+      or (ref_kind = 'agent_case' and ref_id in (
+            select id from agent_cases
+              where organization_id = p_organization_id
+                and conversation_id in (
+                  select id from conversations
+                    where contact_id = p_contact_id and organization_id = p_organization_id
+                )
+          ))
+    );
+  get diagnostics v_count = row_count;
+  v_counts := v_counts || jsonb_build_object('agent_inbox_items', v_count);
+
+  -- agent_case_chat_messages — a consulta interna da equipe à IA SOBRE o caso
+  -- (migration 0281). FK DIRETA para `contacts`, então o vínculo é o titular e
+  -- não precisa passar pela conversa.
+  --
+  -- `redacted_at is null` no `where` é o que torna o passo IDEMPOTENTE: a
+  -- varredura diária de redações incompletas roda a função de novo, e sem essa
+  -- condição o carimbo de QUANDO se apagou seria reescrito a cada rodada.
+  --
+  -- A linha NÃO é apagada, só o texto: quem abrir o caso depois continua vendo
+  -- que a equipe perguntou N vezes, quando, e se a IA respondeu. Apagar a linha
+  -- inteira ficaria verde num teste de "o texto sumiu" e tiraria da organização
+  -- a resposta a "quanto a equipe deliberou sobre este caso".
+  update agent_case_chat_messages set
+    body = null,
+    redacted_at = now()
+  where organization_id = p_organization_id
+    and contact_id = p_contact_id
+    and redacted_at is null;
+  get diagnostics v_count = row_count;
+  v_counts := v_counts || jsonb_build_object('agent_case_chat_messages', v_count);
+
+  -- passagens_de_atendimento — o BRIEFING é sobre a pessoa (migration 0291).
+  --
+  -- A linha guarda o que a IA concluiu sobre um atendimento de alguém
+  -- identificável: o que ela entendeu que a pessoa quer (`title`), a narrativa
+  -- que quem assumiu leu (`body`), as PALAVRAS LITERAIS do cliente (`notes`), o
+  -- texto livre de quem passou (`content`) e o que a IA já tinha tentado
+  -- (`tentativas`). Nada disso é registro de operação — é o relato do problema
+  -- de uma pessoa, escrito por máquina, na tela de quem vai responder.
+  --
+  -- `body` é `not null` e recebe o RÓTULO, não `null` — a mesma razão de
+  -- `voice_calls.peer_phone` e de `agent_cases.title` acima: coluna obrigatória
+  -- anulada aborta o cascade INTEIRO, e um cascade abortado não anonimiza nada.
+  --
+  -- O que FICA, de propósito: `motor`, `origem`, `motivo_codigo`,
+  -- `cliente_avisado`, `aviso_motivo_codigo`, `criado_em` e o par de
+  -- reconhecimento. São operação — quantas passagens houve, por quê, quanto
+  -- tempo até alguém assumir. Um passo que apagasse a linha inteira ficaria
+  -- verde num teste de "o texto sumiu" e tiraria da organização a resposta a
+  -- "quantos atendimentos a IA devolveu em março, e quanto tempo esperaram".
+  --
+  -- O vínculo é a FK DIRETA `contact_id`: a tabela a carrega exatamente para
+  -- este passo não precisar passar pela conversa.
+  update passagens_de_atendimento set
+    body       = v_anon_label,
+    title      = null,
+    notes      = null,
+    content    = null,
+    tentativas = '[]'::jsonb
+  where organization_id = p_organization_id and contact_id = p_contact_id;
+  get diagnostics v_count = row_count;
+  v_counts := v_counts || jsonb_build_object('passagens_de_atendimento', v_count);
+
+  -- entregas_de_aviso_de_caso — o registro do aviso ao suporte (migration 0292).
+  --
+  -- A tabela NÃO guarda o texto do aviso (só `corpo_hash`), e a única coluna
+  -- capaz de ecoar um dado da pessoa é `erro_detalhe`: ali vai o texto CRU que
+  -- o transporte devolveu, truncado, e um provedor que recusa um envio costuma
+  -- devolver o destinatário dentro da mensagem de erro.
+  --
+  -- O que FICA, de propósito: `status`, `erro_codigo`, `tentativas`,
+  -- `enviado_em`, `destino`, `corpo_hash`. São operação — quantos avisos saíram,
+  -- quantos falharam e por quê. Um passo que apagasse a linha inteira ficaria
+  -- verde num teste de "o texto sumiu" e tiraria da organização a resposta a
+  -- "quantos avisos não chegaram em março". `destino` é o telefone da EQUIPE,
+  -- não do titular: anonimizar um cliente não apaga o número do plantão.
+  --
+  -- ⚠️ PONTO CEGO DECLARADO: `tests/invariants/lgpd-cascata-alcanca-quem-
+  -- guarda-pessoa.test.ts` só cobra tabela com FK para `contacts` E coluna cujo
+  -- NOME case o padrão de PII. Esta tabela não satisfaz nenhuma das duas — o
+  -- gate ficaria VERDE sem este passo. Ele entra porque é certo, não porque o
+  -- gate cobra, e isto está escrito aqui para a próxima sessão não o remover
+  -- achando que é ornamento. Quem o vigia é a catraca
+  -- `tests/invariants/cascata-lgpd-nao-encolhe.test.ts`.
+  --
+  -- O vínculo é pela CONVERSA, como o de `agent_cases`: esta tabela aponta para
+  -- o caso, e o caso não tem FK para `contacts`.
+  update entregas_de_aviso_de_caso set
+    erro_detalhe = null
+  where organization_id = p_organization_id
+    and case_id in (
+      select id from agent_cases
+        where organization_id = p_organization_id
+          and conversation_id in (
+            select id from conversations
+              where contact_id = p_contact_id and organization_id = p_organization_id
+          )
+    );
+  get diagnostics v_count = row_count;
+  v_counts := v_counts || jsonb_build_object('entregas_de_aviso_de_caso', v_count);
 
   -- 8. dense audit row
   insert into api_audit_log (organization_id, action, actor_user_id, resource_type, resource_id, metadata, bypassed_rls)
@@ -1797,6 +3498,17 @@ drop trigger if exists trg_ad_hierarchy_cache_updated_at on public.ad_hierarchy_
 create trigger trg_ad_hierarchy_cache_updated_at
   before update on public.ad_hierarchy_cache
   for each row execute function public.fn_set_updated_at();
+
+-- Funções criadas depois da varredura abaixo poderiam nascer com EXECUTE para
+-- anon por causa dos privilégios padrão do baseline. A definição precisa ficar
+-- antes dela; o trigger só é instalado junto da tabela mais abaixo.
+create or replace function public.touch_organization_data_plane_updated_at()
+returns trigger language plpgsql security invoker set search_path = public, pg_temp as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
 
 -- ---- VARREDURA anon: função nova nasce exposta em quem ATUALIZA (migration 0116) ----
 --
@@ -2603,13 +4315,6 @@ grant select, insert, update, delete on public.organization_data_planes to servi
 create index if not exists organization_data_planes_status_idx
   on public.organization_data_planes(status);
 
-create or replace function public.touch_organization_data_plane_updated_at()
-returns trigger language plpgsql security invoker set search_path = public, pg_temp as $$
-begin
-  new.updated_at = now();
-  return new;
-end;
-$$;
 drop trigger if exists organization_data_planes_touch_updated_at
   on public.organization_data_planes;
 create trigger organization_data_planes_touch_updated_at
