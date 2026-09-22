@@ -185,6 +185,9 @@ export async function getTenantDataClient(
     return await getOrganizationDataPlaneClient(organizationId, shared);
   } catch (error) {
     if (error instanceof Error && error.message === "data_plane_not_registered") {
+      if (process.env.TENANCY_REQUIRE_DEDICATED?.trim().toLowerCase() === "true") {
+        throw new Error("data_plane_required");
+      }
       return shared;
     }
     throw error;
