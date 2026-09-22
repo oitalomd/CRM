@@ -37,6 +37,7 @@ import { getWahaClient, wahaFriendlyError } from "@/lib/waha/client";
 import { traduzir } from "@/lib/i18n/dicionario";
 import { logger } from "@/lib/logger";
 import { decryptWebhookSecret } from "@/lib/webhooks/secrets";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -107,8 +108,9 @@ type DependentTable =
 async function loadDeletionImpact(
   orgId: string,
   channelSessionId: string,
+  db = createAdminClient(),
 ): Promise<ChannelDeletionImpact> {
-  const admin = createAdminClient();
+  const admin = db;
   // `select("*")` com `head` não devolve linha nenhuma — só o contador. Pedir uma
   // coluna concreta quebraria em `channel_knobs`, cuja chave é (org, sessão): ela
   // não tem `id`.
@@ -162,7 +164,7 @@ export async function GET(
   const activeOrg = await resolveActiveOrg(user);
   if (!activeOrg) return fail("forbidden_tenant", "Nenhuma organização ativa.", 403, { requestId });
 
-  const supabase = await createClient();
+  const supabase = await getTenantDataClient(activeOrg.orgId, await createClient());
   const { data: session } = await supabase
     .from("channel_sessions")
     .select("id, provider, waha_session_name, display_name, phone_number, status")
@@ -173,7 +175,7 @@ export async function GET(
 
   const impact =
     req.nextUrl.searchParams.get("impact") === "1"
-      ? await loadDeletionImpact(activeOrg.orgId, id)
+      ? await loadDeletionImpact(activeOrg.orgId, id, supabase)
       : null;
   const comImpacto = <T extends object>(corpo: T): T & { deletion_impact?: ChannelDeletionImpact } =>
     impact ? { ...corpo, deletion_impact: impact } : corpo;
@@ -321,7 +323,7 @@ export async function DELETE(
   const { user, org: activeOrg } = authz;
   if (await mfaEmDivida()) return fail("mfa_required", "Confirme a verificação em duas etapas.", 403, { requestId });
 
-  const supabase = await createClient();
+  const supabase = await getTenantDataClient(activeOrg.orgId, await createClient());
   const { data: session } = await supabase
     .from("channel_sessions")
     .select(
@@ -332,7 +334,7 @@ export async function DELETE(
     .maybeSingle();
   if (!session) return fail("not_found", t("Canal não encontrado."), 404, { requestId });
 
-  const impact = await loadDeletionImpact(activeOrg.orgId, id);
+  const impact = await loadDeletionImpact(activeOrg.orgId, id, supabase);
   const arquivar = impact.outcome === "archive";
 
   const now = new Date().toISOString();
@@ -360,7 +362,7 @@ export async function DELETE(
       );
     }
     try {
-      await assertWahaConnectionIdle(createAdminClient(), activeOrg.orgId, id);
+      await assertWahaConnectionIdle(supabase, activeOrg.orgId, id);
       await waha.logoutSession(session.waha_session_name as string);
       await waha.deleteSession(session.waha_session_name as string);
     } catch (err) {
@@ -514,3 +516,4 @@ export async function DELETE(
 
   return ok({ id, archived: arquivar, impact }, { requestId });
 }
+
