@@ -13,7 +13,9 @@
  * lib/routing/decide.ts; aqui só há I/O.
  */
 import { z } from "zod";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { logger } from "@/lib/logger";
 import { decideRouting } from "@/lib/routing/decide";
 import { loadEligibleAttendants, InvalidRoutingChannel } from "@/lib/routing/eligibles";
@@ -112,7 +114,8 @@ export async function runRoutingWorker(opts: RoutingWorkerOptions = {}): Promise
     if (!claimed) continue;
     summary.batch_size += 1;
     try {
-      const outcome = await processEvent(event, now);
+      const dataClient = await getTenantDataClient(event.organization_id, admin);
+      const outcome = await processEvent(event, now, dataClient);
       summary.outcomes[outcome] += 1;
     } catch (err) {
       summary.outcomes.error += 1;
@@ -130,8 +133,12 @@ export async function runRoutingWorker(opts: RoutingWorkerOptions = {}): Promise
   return summary;
 }
 
-async function processEvent(event: EventRow, now: Date): Promise<RoutingOutcome> {
-  const admin = createAdminClient();
+async function processEvent(
+  event: EventRow,
+  now: Date,
+  dataClient: SupabaseClient,
+): Promise<RoutingOutcome> {
+  const controlPlane = createAdminClient();
   const payload = event.payload ?? {};
   const orgId = strOrNull(payload.organization_id) ?? event.organization_id;
   const conversationId = strOrNull(payload.conversation_id);
@@ -141,7 +148,7 @@ async function processEvent(event: EventRow, now: Date): Promise<RoutingOutcome>
     return "skipped_invalid_payload";
   }
 
-  const { data: conv, error: convError } = await admin
+  const { data: conv, error: convError } = await dataClient
     .from("conversations")
     .select("id, organization_id, contact_id, channel_session_id, assigned_to_user_id, status")
     .eq("id", conversationId)
@@ -155,7 +162,7 @@ async function processEvent(event: EventRow, now: Date): Promise<RoutingOutcome>
   }
 
   // organizations.settings.routing → Zod (default manual; knobs = config, não hardcode).
-  const { data: org, error: orgError } = await admin
+  const { data: org, error: orgError } = await controlPlane
     .from("organizations")
     .select("settings")
     .eq("id", orgId)
@@ -169,12 +176,12 @@ async function processEvent(event: EventRow, now: Date): Promise<RoutingOutcome>
   let eligibles: Awaited<ReturnType<typeof loadEligibleAttendants>> = [];
   if (!alreadyAssigned && config.mode === "round_robin") {
     try {
-      eligibles = await loadEligibleAttendants(admin, orgId, now, {
+      eligibles = await loadEligibleAttendants(dataClient, orgId, now, {
         kind: "conversation_channel", channelSessionId: conv.channel_session_id,
       });
     } catch (error) {
       if (!(error instanceof InvalidRoutingChannel)) throw error;
-      await notice(orgId, conversationId, "invalid_channel");
+      await notice(dataClient, orgId, conversationId, "invalid_channel");
       await markDone(event, "skipped_invalid_channel");
       return "skipped_invalid_channel";
     }
@@ -191,7 +198,7 @@ async function processEvent(event: EventRow, now: Date): Promise<RoutingOutcome>
 
   switch (action.kind) {
     case "assign": {
-      const { data: result, error } = await admin.rpc("fn_channel_routing_claim", {
+      const { data: result, error } = await dataClient.rpc("fn_channel_routing_claim", {
         p_org: orgId, p_conversation: conversationId, p_channel: conv.channel_session_id,
         p_user: action.userId, p_reason: "routing",
         p_schedule: eligibles.find((candidate) => candidate.userId === action.userId)?.scheduleSnapshot ?? {},
@@ -209,7 +216,7 @@ async function processEvent(event: EventRow, now: Date): Promise<RoutingOutcome>
         return "requeued_no_eligible";
       }
       const leads = await adotarLeadsDoContato(
-        admin,
+        dataClient,
         orgId,
         strOrNull((conv as { contact_id?: unknown }).contact_id),
         action.userId,
@@ -237,7 +244,7 @@ async function processEvent(event: EventRow, now: Date): Promise<RoutingOutcome>
       return outcome;
     }
     case "requeue": {
-      if (action.attempts >= config.max_retries) await notice(orgId, conversationId, "no_eligible");
+      if (action.attempts >= config.max_retries) await notice(dataClient, orgId, conversationId, "no_eligible");
       await requeueEvent(event, now, action.attempts, { reason: "no_eligible" }, action.nextAttemptAt);
       return "requeued_no_eligible";
     }
@@ -314,8 +321,13 @@ async function requeueEvent(
   if (error) logger.warn("[routing-worker] requeue failed", { event_id: event.id, error: error.message });
 }
 
-async function notice(orgId: string, conversationId: string, reason: string): Promise<void> {
-  const { error } = await createAdminClient().rpc("fn_routing_unassigned_notice", {
+async function notice(
+  dataClient: SupabaseClient,
+  orgId: string,
+  conversationId: string,
+  reason: string,
+): Promise<void> {
+  const { error } = await dataClient.rpc("fn_routing_unassigned_notice", {
     p_org: orgId, p_conversation: conversationId, p_reason: reason,
   });
   if (error) throw new Error(error.message);
@@ -360,7 +372,7 @@ function strOrNull(v: unknown): string | null {
  * de novo.
  */
 export async function adotarLeadsDoContato(
-  admin: ReturnType<typeof createAdminClient>,
+  admin: SupabaseClient,
   orgId: string,
   contactId: string | null,
   userId: string,
@@ -398,3 +410,4 @@ export async function adotarLeadsDoContato(
     return 0;
   }
 }
+
