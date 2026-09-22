@@ -267,7 +267,7 @@ export async function verifyAndPromoteOrganizationDataPlane(
     pools.set(organizationId, pool);
     return {
       organizationId,
-      schemaVersion: row.schema_version,
+      schemaVersion,
       healthcheckedAt,
     };
   } catch (error) {
