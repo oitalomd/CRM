@@ -46,6 +46,7 @@ import { ARCHIVED_AT, queryTolerantToMissingArchived } from "@/lib/channels/arch
 import { createClient } from "@/lib/supabase/server";
 import { getWahaClient, wahaFriendlyError } from "@/lib/waha/client";
 import { traduzir } from "@/lib/i18n/dicionario";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -80,7 +81,7 @@ export async function POST(
   const { user, org: activeOrg } = authz;
   if (await mfaEmDivida()) return fail("mfa_required", "Confirme a verificação em duas etapas.", 403, { requestId });
 
-  const supabase = await createClient();
+  const supabase = await getTenantDataClient(activeOrg.orgId, await createClient());
   const buscar = (colunas: string) =>
     supabase
       .from("channel_sessions")
@@ -195,3 +196,4 @@ export async function POST(
     return fail("waha_error", wahaFriendlyError(err), 502, { requestId });
   }
 }
+
