@@ -103,8 +103,7 @@ export async function POST(req: NextRequest, ctx: RouteCtx): Promise<Response> {
   const buffer = audio.buffer;
 
   const storagePath = `${activeOrg.orgId}/${conversationId}/out-${randomUUID()}.${extFromMime(mimeFinal)}`;
-  const admin = createAdminClient();
-  const { error: upErr } = await admin.storage
+  const { error: upErr } = await supabase.storage
     .from("whatsapp-media")
     .upload(storagePath, buffer, { contentType: mimeFinal, upsert: false });
   if (upErr) {
