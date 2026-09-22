@@ -26,6 +26,8 @@ import { triggerSlaAlarm } from "@/lib/lgpd/sla-alarm";
 import { marcaDaSaida, type MarcaDeSaida } from "@/lib/branding/saida";
 import type { LgpdRequest } from "@/lib/lgpd/types";
 import type { AlarmThreshold } from "@/lib/lgpd/sla-alarm";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
 
@@ -33,11 +35,12 @@ export const dynamic = "force-dynamic";
 const SCAN_LIMIT = 500;
 
 interface OrgRow {
+  id: string;
   dpo_email: string | null;
   display_name: string | null;
 }
 
-type RequestWithOrg = LgpdRequest & OrgRow;
+type RequestCandidate = { request: LgpdRequest; organization: OrgRow; dataClient: SupabaseClient };
 
 export async function GET(req: NextRequest): Promise<Response> {
   const requestId = randomUUID();
@@ -59,43 +62,35 @@ export async function GET(req: NextRequest): Promise<Response> {
     return fail("forbidden", "Cron secret missing or invalid.", 403, { requestId });
   }
 
-  // ────────────────────────────────────────────────────────────────────────
-  // Query — system-wide scan via admin client (bypasses RLS intentionally;
-  //          this is a platform-level cron, not a tenant-scoped request)
-  // MVP: corridos OK; precision via computeDueAt deferred to v2
-  // ────────────────────────────────────────────────────────────────────────
-  const supabaseAdmin = createAdminClient();
+  const controlPlane = createAdminClient();
+  const { data: organizations, error: organizationsError } = await controlPlane
+    .from("organizations")
+    .select("id, dpo_email, display_name")
+    .limit(50);
+  if (organizationsError) return fail("internal_error", "Failed to list organizations.", 500, { requestId });
 
-  const { data: rows, error: queryError } = await supabaseAdmin
-    .from("lgpd_requests")
-    .select(
-      `
-      *,
-      organizations!inner(
-        dpo_email,
-        display_name
-      )
-    `,
-    )
-    .not("status", "in", '("completed","failed")')
-    .or(
-      [
-        "and(request_type.eq.data_request,received_at.lte." +
-          new Date(Date.now() - 5 * 86_400_000).toISOString() +
-          ")",
-        "and(request_type.in.(redact,store_redact),received_at.lte." +
-          new Date(Date.now() - 10 * 86_400_000).toISOString() +
-          ")",
-      ].join(","),
-    )
-    .limit(SCAN_LIMIT);
-
-  if (queryError) {
-    console.error("[lgpd-sla-watcher] query failed", queryError.message);
-    return fail("internal_error", "Failed to query lgpd_requests.", 500, { requestId });
+  const candidates: RequestCandidate[] = [];
+  for (const organization of (organizations ?? []) as OrgRow[]) {
+    try {
+      const dataClient = await getTenantDataClient(organization.id, controlPlane);
+      const { data: rows, error } = await dataClient
+        .from("lgpd_requests")
+        .select("*")
+        .eq("organization_id", organization.id)
+        .not("status", "in", '("completed","failed")')
+        .or(
+          [
+            "and(request_type.eq.data_request,received_at.lte." + new Date(Date.now() - 5 * 86_400_000).toISOString() + ")",
+            "and(request_type.in.(redact,store_redact),received_at.lte." + new Date(Date.now() - 10 * 86_400_000).toISOString() + ")",
+          ].join(","),
+        )
+        .limit(SCAN_LIMIT);
+      if (error) throw error;
+      for (const row of rows ?? []) candidates.push({ request: row as LgpdRequest, organization, dataClient });
+    } catch (err) {
+      console.error("[lgpd-sla-watcher] organization query failed", organization.id, err);
+    }
   }
-
-  const requests = (rows ?? []) as unknown as RequestWithOrg[];
 
   // ────────────────────────────────────────────────────────────────────────
   // Process each request
@@ -118,45 +113,18 @@ export async function GET(req: NextRequest): Promise<Response> {
     return resolvida;
   };
 
-  for (const row of requests) {
-    const threshold: AlarmThreshold =
-      row.request_type === "data_request" ? "data_request_d5" : "redact_d10";
-
-    // Extract org columns from the joined relation
-    const orgData = (row as unknown as { organizations: OrgRow }).organizations;
-    const dpoEmail = orgData?.dpo_email ?? null;
-    const orgName = orgData?.display_name ?? null;
-
-    // Build a clean LgpdRequest (strip joined columns)
-    const lgpdRequest: LgpdRequest = {
-      id: row.id,
-      organization_id: row.organization_id,
-      request_type: row.request_type,
-      source: row.source,
-      contact_id: row.contact_id,
-      external_customer_id: row.external_customer_id,
-      status: row.status,
-      attempts: row.attempts,
-      received_at: row.received_at,
-      due_at: row.due_at,
-      completed_at: row.completed_at,
-      request_payload: row.request_payload,
-      result: row.result,
-      error_message: row.error_message,
-      cascaded_to: row.cascaded_to,
-      emergency: row.emergency,
-      scope: row.scope,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-    };
+  for (const candidate of candidates) {
+    const { request: lgpdRequest, organization, dataClient } = candidate;
+    const threshold: AlarmThreshold = lgpdRequest.request_type === "data_request" ? "data_request_d5" : "redact_d10";
 
     try {
       const result = await triggerSlaAlarm({
         request: lgpdRequest,
         threshold,
-        organizationDpoEmail: dpoEmail,
-        organizationName: orgName,
-        marca: await marcaDe(row.organization_id),
+        organizationDpoEmail: organization.dpo_email,
+        organizationName: organization.display_name,
+        marca: await marcaDe(lgpdRequest.organization_id),
+        dataClient,
       });
 
       if (result.reason === "dedup_24h") {
@@ -169,12 +137,12 @@ export async function GET(req: NextRequest): Promise<Response> {
       }
     } catch (err) {
       errorsCount++;
-      console.error("[lgpd-sla-watcher] triggerSlaAlarm threw for request", row.id, err);
+      console.error("[lgpd-sla-watcher] triggerSlaAlarm threw for request", lgpdRequest.id, err);
     }
   }
 
   const durationMs = Date.now() - startedAt;
-  const scanned = requests.length;
+  const scanned = candidates.length;
 
   // ────────────────────────────────────────────────────────────────────────
   // Master audit entry (fire-and-forget)
@@ -207,3 +175,4 @@ export async function GET(req: NextRequest): Promise<Response> {
     { requestId },
   );
 }
+
