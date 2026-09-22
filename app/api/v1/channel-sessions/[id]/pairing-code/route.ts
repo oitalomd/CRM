@@ -3,7 +3,8 @@ import { z } from "zod";
 import { requireSupportWrite } from "@/lib/impersonate/support";
 import { requireRole } from "@/lib/auth/require-role";
 import { mfaEmDivida } from "@/lib/auth/server";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { ok, fail } from "@/lib/api/wrappers";
 import { audit } from "@/lib/audit";
 import {
@@ -46,8 +47,9 @@ export async function POST(
       { requestId, headers },
     );
   try {
+    const dataClient = await getTenantDataClient(authz.org.orgId, createAdminClient());
     const result = await requestChannelPairingCode(
-      await createClient(),
+      dataClient,
       authz.org.orgId,
       path.data.id,
       body.data.phone_number,
@@ -75,3 +77,4 @@ export async function POST(
     );
   }
 }
+
