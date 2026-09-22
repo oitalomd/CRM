@@ -16,6 +16,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/env", () => ({ env: { INTERNAL_SECRET: "segredo", INTERNAL_CRON_SECRET: "" } }));
 vi.mock("@/lib/audit", () => ({ audit: vi.fn(async () => undefined) }));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({
+  getTenantDataClient: vi.fn(async (_organizationId: string, controlPlane: unknown) => controlPlane),
+}));
 
 import { audit } from "@/lib/audit";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -38,9 +41,13 @@ function admin(
 ) {
   return {
     from(tabela: string) {
+      if (tabela === "organizations") {
+        return { select: async () => ({ data: [{ id: ORG }], error: null }) };
+      }
       if (tabela === "channel_sessions") {
         const c: Record<string, unknown> = {
           select: () => c,
+          eq: () => c,
           is: () => c,
           limit: async () => ({ data: canais, error: null }),
         };
@@ -220,3 +227,4 @@ describe("canal-mudo-watcher", () => {
     expect(cap.avisos).toHaveLength(0);
   });
 });
+
