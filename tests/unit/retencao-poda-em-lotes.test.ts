@@ -48,17 +48,20 @@ let contatosAnonimizados: Array<{ id: string; organization_id: string }> = [];
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({
     rpc: async () => respostaRpc,
-    from: () => {
+    from: (table: string) => {
       const q: Record<string, unknown> = {
         eq: () => q,
         in: () => q,
         limit: () => q,
         then: (r: (v: unknown) => unknown) =>
-          Promise.resolve({ data: contatosAnonimizados, error: null }).then(r),
+          Promise.resolve({ data: table === "organizations" ? [{ id: "org-1" }] : contatosAnonimizados, error: null }).then(r),
       };
       return { select: () => q, update: () => q };
     },
   }),
+}));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({
+  getTenantDataClient: async (organizationId: string, controlPlane: unknown) => controlPlane,
 }));
 
 /**
@@ -359,3 +362,4 @@ describe("o handler HTTP — a falha entra na trilha, o vazio não", () => {
     });
   });
 });
+
