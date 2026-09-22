@@ -12,6 +12,7 @@ import { requireSupportWrite } from "@/lib/impersonate/support";
  * só olha a agenda não muda nada nela.
  */
 import { randomUUID } from "node:crypto";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { type NextRequest } from "next/server";
 import { z } from "zod";
@@ -33,7 +34,8 @@ import { logger } from "@/lib/logger";
 type AgendamentoDaResposta = AgendamentoListado & { origem?: "google_sync" };
 import { ApiError } from "@/lib/api/types";
 import { requireRole } from "@/lib/auth/require-role";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { traduzir } from "@/lib/i18n/dicionario";
 
 import {
@@ -171,7 +173,17 @@ export async function GET(req: NextRequest): Promise<Response> {
     });
   }
 
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(activeOrg.orgId, createAdminClient());
+  } catch (err) {
+    return fail(
+      "tenant_data_plane_unavailable",
+      err instanceof Error ? err.message : "Tenant data plane unavailable.",
+      503,
+      { requestId },
+    );
+  }
   const resultado = await listaAgendamentos(supabase, activeOrg.orgId, {
     contactId: parsed.data.contact_id ?? null,
     leadId: parsed.data.lead_id ?? null,
@@ -235,7 +247,7 @@ export async function GET(req: NextRequest): Promise<Response> {
     // item 3). `organization_id` continua vindo do cookie validado; os donos são
     // membros DESSA organização, com filtro explícito (mesmo caminho de
     // `app/api/v1/agenda/pessoas/route.ts`).
-    const { donos, erro: erroDosDonos } = await donosDaAgenda(activeOrg.orgId);
+    const { donos, erro: erroDosDonos } = await donosDaAgenda(activeOrg.orgId, supabase);
     if (erroDosDonos) {
       logger.warn("[agenda.agendamentos] donos da agenda não vieram", {
         erro: erroDosDonos,
@@ -317,7 +329,7 @@ async function despachar<T>(
   req: NextRequest,
   schema: z.ZodType<T>,
   handler: (
-    supabase: Awaited<ReturnType<typeof createClient>>,
+    supabase: SupabaseClient,
     ctx: { organization_id: string; actor: { type: "user"; id: string }; requestId: string },
     input: T,
   ) => Promise<Record<string, unknown>>,
@@ -338,7 +350,17 @@ async function despachar<T>(
     });
   }
 
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(activeOrg.orgId, createAdminClient());
+  } catch (err) {
+    return fail(
+      "tenant_data_plane_unavailable",
+      err instanceof Error ? err.message : "Tenant data plane unavailable.",
+      503,
+      { requestId },
+    );
+  }
   try {
     const resultado = await handler(
       supabase,
@@ -363,3 +385,4 @@ async function despachar<T>(
     throw err;
   }
 }
+

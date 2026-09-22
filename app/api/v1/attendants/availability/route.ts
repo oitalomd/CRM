@@ -28,7 +28,7 @@ import { isServiceRoleConfigured } from "@/lib/audit";
 import { requireRole } from "@/lib/auth/require-role";
 import { carregarRosterDeAtendimento } from "@/lib/escalacao/atendentes";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -55,7 +55,17 @@ export async function GET(_req: NextRequest): Promise<Response> {
   // Dev sem service role: devolve só as linhas de availability (org-wide via RLS
   // própria da tabela), sem roster completo nem nomes.
   if (!isServiceRoleConfigured()) {
-    const supabase = await createClient();
+    let supabase;
+    try {
+      supabase = await getTenantDataClient(activeOrg.orgId, createAdminClient());
+    } catch (err) {
+      return fail(
+        "tenant_data_plane_unavailable",
+        err instanceof Error ? err.message : "Tenant data plane unavailable.",
+        503,
+        { requestId },
+      );
+    }
     const { data, error } = await supabase
       .from("attendant_availability")
       .select(SELECT_COLS)
@@ -80,13 +90,24 @@ export async function GET(_req: NextRequest): Promise<Response> {
   }
 
   const admin = createAdminClient();
+  let tenantData;
+  try {
+    tenantData = await getTenantDataClient(activeOrg.orgId, admin);
+  } catch (err) {
+    return fail(
+      "tenant_data_plane_unavailable",
+      err instanceof Error ? err.message : "Tenant data plane unavailable.",
+      503,
+      { requestId },
+    );
+  }
 
   // O roster + a carga vivem em lib/escalacao/atendentes.ts porque a capacidade
   // do agente ("quem pode assumir agora?") lê exatamente a mesma coisa. Enquanto
   // a regra morou aqui dentro, o agente escalava para uma fila cega.
   let roster;
   try {
-    roster = await carregarRosterDeAtendimento(admin, activeOrg.orgId, agora);
+    roster = await carregarRosterDeAtendimento(tenantData, activeOrg.orgId, agora);
   } catch (err) {
     return fail("internal_error", err instanceof Error ? err.message : "roster", 500, {
       requestId,
@@ -128,3 +149,4 @@ export async function GET(_req: NextRequest): Promise<Response> {
 
   return ok(rows, { requestId });
 }
+

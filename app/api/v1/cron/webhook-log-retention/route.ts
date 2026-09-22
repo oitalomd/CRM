@@ -20,6 +20,7 @@ import { LOTE_PADRAO, podarArquivoDeWebhooks } from "@/lib/channels/retencao-do-
 import { podarHistoricoDeCaptacao } from "@/lib/webhooks/retencao-da-captacao";
 import { env } from "@/lib/env";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -49,27 +50,46 @@ export async function GET(req: NextRequest): Promise<Response> {
   const lote =
     Number.isFinite(pedido) && pedido > 0 ? Math.min(pedido, LOTE_MAXIMO) : LOTE_PADRAO;
 
-  const admin = createAdminClient();
+  const controlPlane = createAdminClient();
 
-  const resultado = await podarArquivoDeWebhooks(admin, {
-    diasComCorpo: env.WEBHOOK_LOG_BODY_RETENTION_DAYS,
-    diasParaApagar: env.WEBHOOK_LOG_ROW_RETENTION_DAYS,
-    lote,
-  });
+  const { data: organizations, error: organizationsError } = await controlPlane.from("organizations").select("id").limit(50);
+  if (organizationsError) return fail("internal_error", "Failed to list organizations.", 500, { requestId });
 
-  // O HISTÓRICO de captação (`webhook_lead_captures`) roda no MESMO tique, e
+  const resultado = { esvaziadas: 0, apagadas: 0, temMais: false, organizations: organizations?.length ?? 0, orgs_with_error: 0 };
+  const captacao = { apagadas: 0, temMais: false, diasAplicados: 0 };
+  for (const organization of organizations ?? []) {
+    try {
+      const tenant = await getTenantDataClient(organization.id as string, controlPlane);
+      const parte = await podarArquivoDeWebhooks(tenant, {
+        diasComCorpo: env.WEBHOOK_LOG_BODY_RETENTION_DAYS,
+        diasParaApagar: env.WEBHOOK_LOG_ROW_RETENTION_DAYS,
+        lote,
+      });
+      resultado.esvaziadas += parte.esvaziadas;
+      resultado.apagadas += parte.apagadas;
+      resultado.temMais ||= parte.temMais;
+
+      // O HISTÓRICO de captação (`webhook_lead_captures`) roda no MESMO tique, e
   // não num cron novo: são duas tabelas do mesmo assunto, e uma rota a mais
   // seria mais uma linha no `entrypoint.sh` do scheduler para alguém esquecer
   // de agendar — o defeito que já custou meses ao risk-watcher e ao
   // routing-worker. Horizonte próprio (muito mais longo), porque lá a linha é
   // despejo de depuração e aqui ela é o produto.
-  const captacao = await podarHistoricoDeCaptacao(admin, {
+      const parteCaptacao = await podarHistoricoDeCaptacao(tenant, {
     // A STRING crua, e não um número já coagido: quem interpreta é
     // `lib/retencao/politica.ts`, que sabe resolver lixo para o lado seguro E
     // devolver a frase de aviso. Coagir antes jogaria o aviso fora.
     diasBrutos: env.LEAD_CAPTURE_RETENTION_DAYS,
-    lote,
-  });
+        lote,
+      });
+      captacao.apagadas += parteCaptacao.apagadas;
+      captacao.temMais ||= parteCaptacao.temMais;
+      captacao.diasAplicados = parteCaptacao.diasAplicados;
+    } catch {
+      resultado.orgs_with_error++;
+    }
+  }
 
   return ok({ ...resultado, captacao }, { requestId });
 }
+

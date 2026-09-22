@@ -25,6 +25,9 @@ import { listContactsHandler } from "./_handler";
 vi.mock("@/lib/auth/require-role", () => ({ requireRole: vi.fn() }));
 vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({
+  getTenantDataClient: vi.fn(async (_organizationId: string, shared: unknown) => shared),
+}));
 vi.mock("./_handler", () => ({
   listContactsHandler: vi.fn(async () => ({ contacts: [], cursor: null, has_more: false })),
   createContactHandler: vi.fn(),
@@ -207,3 +210,4 @@ describe("GET /api/v1/contacts — alcançável sem cookie (proxy)", () => {
     expect(isPublicPath("/api/v1/contacts/import")).toBe(false);
   });
 });
+

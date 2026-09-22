@@ -22,6 +22,7 @@ import {
 } from "@/lib/channels";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -50,9 +51,16 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
     return fail("no_active_org", t("No active organization."), 403, { requestId });
   }
 
+  let dataClient;
+  try {
+    dataClient = await getTenantDataClient(activeOrg.orgId, createAdminClient());
+  } catch (err) {
+    return fail("tenant_data_plane_unavailable", err instanceof Error ? err.message : "Tenant data plane unavailable.", 503, { requestId });
+  }
+
   // Client de sessão: RLS garante que a mensagem pertence a uma org do usuário.
   // Filtro explícito de organization_id por doutrina (defense-in-depth).
-  const { data: msg, error } = await supabase
+  const { data: msg, error } = await dataClient
     .from("messages")
     .select("id, media_url, media_mime, media_storage_path, channel_session_id")
     .eq("id", messageId)
@@ -66,8 +74,7 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
   }
 
   if (msg.media_storage_path) {
-    const admin = createAdminClient();
-    const { data: signed, error: signErr } = await admin.storage
+    const { data: signed, error: signErr } = await dataClient.storage
       .from("whatsapp-media")
       .createSignedUrl(msg.media_storage_path, SIGNED_URL_TTL_S);
     if (!signErr && signed?.signedUrl) {
@@ -92,8 +99,7 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
   // contêiner do canal por QR — 404, e a tela dizia "mídia indisponível".
   if (msg.media_url) {
     try {
-      const admin = createAdminClient();
-      const { data: sessao } = await admin
+      const { data: sessao } = await dataClient
         .from("channel_sessions")
         .select(`provider, ${CHANNEL_SESSION_REF_COLUMNS}`)
         .eq("organization_id", activeOrg.orgId)
@@ -112,6 +118,7 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
 
       const media = await adapter.fetchInboundMedia({
         organizationId: activeOrg.orgId,
+        dataClient,
         sessionRef,
         url: msg.media_url,
         hintMime: msg.media_mime,
@@ -131,3 +138,4 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
 
   return fail("not_found", t("Mensagem sem mídia."), 404, { requestId });
 }
+

@@ -7,6 +7,7 @@ import { fail, ok } from "@/lib/api/wrappers";
 import { requireSupportWrite } from "@/lib/impersonate/support";
 import { requireRole } from "@/lib/auth/require-role";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import {
   aiAccessUpdateSchema, lerModoDeAcessoDaIa, lerNumerosDeTeste,
 } from "@/lib/ai/elegibilidade/pre-go-live";
@@ -21,7 +22,8 @@ export async function GET(_req: NextRequest, { params }: Context): Promise<Respo
   if (!auth.ok) return auth.response;
   const { id } = await params;
   if (!z.uuid().safeParse(id).success) return fail("validation_failed", "Canal inválido.", 422, { requestId });
-  const { data, error } = await createAdminClient().from("channel_sessions")
+  const dataClient = await getTenantDataClient(auth.org.orgId, createAdminClient());
+  const { data, error } = await dataClient.from("channel_sessions")
     .select("metadata").eq("organization_id", auth.org.orgId).eq("id", id)
     .is("archived_at", null).maybeSingle();
   if (error) return fail("internal_error", "Não foi possível carregar o acesso da IA.", 500, { requestId });
@@ -41,7 +43,8 @@ export async function PATCH(req: NextRequest, { params }: Context): Promise<Resp
   if (!parsed.success) return fail("validation_failed", "Use telefones com DDI, por exemplo +5511999998888.", 422, { requestId });
   const { mode, test_phone_numbers } = parsed.data;
   // RPC atômica: não sobrescreve as demais configurações de metadata.
-  const { data, error } = await createAdminClient().rpc("fn_configurar_pre_go_live_canal", {
+  const dataClient = await getTenantDataClient(auth.org.orgId, createAdminClient());
+  const { data, error } = await dataClient.rpc("fn_configurar_pre_go_live_canal", {
     p_org: auth.org.orgId, p_canal: id, p_modo: mode, p_numeros: test_phone_numbers,
   });
   if (error) return fail("internal_error", "Não foi possível salvar o acesso da IA. Verifique se o banco está atualizado.", 500, { requestId });
@@ -53,3 +56,4 @@ export async function PATCH(req: NextRequest, { params }: Context): Promise<Resp
   });
   return ok(parsed.data, { requestId });
 }
+

@@ -4,9 +4,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { requireRole } from "@/lib/auth/require-role";
 import { emitLeadActivity } from "@/lib/leads/activity-emitter";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 vi.mock("@/lib/auth/require-role", () => ({ requireRole: vi.fn() }));
 vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
+vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({ getTenantDataClient: vi.fn() }));
 vi.mock("@/lib/audit", () => ({ audit: vi.fn(async () => undefined) }));
 vi.mock("@/lib/leads/activity-emitter", () => ({
   emitLeadActivity: vi.fn(),
@@ -100,7 +104,10 @@ beforeEach(() => {
     user: { id: USER_ID, idioma: "pt-BR" },
     org: { orgId: ORG_ID },
   } as never);
-  vi.mocked(createClient).mockResolvedValue(bancoFalso() as never);
+  const banco = bancoFalso();
+  vi.mocked(createClient).mockResolvedValue(banco as never);
+  vi.mocked(createAdminClient).mockReturnValue(banco as never);
+  vi.mocked(getTenantDataClient).mockResolvedValue(banco as never);
 });
 
 function request(body: Record<string, unknown>): NextRequest {
@@ -133,3 +140,4 @@ vi.mock("@/lib/impersonate/support", async (importOriginal) => ({
   requireSupportWrite: vi.fn(async () => null),
   authenticatedSessionId: vi.fn(async () => "f2200000-0000-4000-8000-000000000099"),
 }));
+

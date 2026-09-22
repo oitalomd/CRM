@@ -18,19 +18,22 @@
 
 import { createClient as createSupabaseClient, type SupabaseClient } from "@supabase/supabase-js";
 import { env } from "@/lib/env";
+import { supabaseAdminFetch } from "@/lib/supabase/admin-fetch";
 
 let _admin: SupabaseClient | null = null;
 
 export function createAdminClient(): SupabaseClient {
   if (_admin) return _admin;
 
-  _admin = createSupabaseClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
+  const adminKey = env.SUPABASE_SECRET_KEY || env.SUPABASE_SERVICE_ROLE_KEY;
+  _admin = createSupabaseClient(env.NEXT_PUBLIC_SUPABASE_URL, adminKey, {
     auth: {
       autoRefreshToken: false,
       persistSession: false,
       detectSessionInUrl: false,
     },
     global: {
+      fetch: supabaseAdminFetch(adminKey),
       headers: {
         "X-Client-Info": "deskcomm-crm/admin",
       },
@@ -39,3 +42,4 @@ export function createAdminClient(): SupabaseClient {
 
   return _admin;
 }
+

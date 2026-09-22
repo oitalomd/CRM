@@ -1,6 +1,8 @@
 import { type NextRequest } from "next/server";
 import { requirePlatformAdmin } from "@/lib/auth/requirePlatformAdmin";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { resolveOrganizationDataPlane } from "@/lib/tenancy/data-plane-boundary";
+import { getDedicatedConversation } from "@/lib/tenancy/data-plane-inbox";
 import { ok, fail } from "@/lib/api/wrappers";
 import { audit } from "@/lib/audit";
 import { randomUUID } from "node:crypto";
@@ -10,7 +12,7 @@ import { randomUUID } from "node:crypto";
 // ---------------------------------------------------------------------------
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const requestId = randomUUID();
@@ -24,6 +26,45 @@ export async function GET(
   }
 
   const admin = createAdminClient();
+
+  const tenantId = req.nextUrl.searchParams.get("tenant_id");
+  if (tenantId) {
+    const plane = await resolveOrganizationDataPlane(tenantId, admin).catch((error) => error);
+    if (plane instanceof Error) {
+      return fail("data_plane_unavailable", "Dedicated data plane is unavailable", 503, {
+        requestId,
+        details: plane.message,
+      });
+    }
+    if (plane.mode === "dedicated") {
+      try {
+        const result = await getDedicatedConversation({
+          pool: plane.pool,
+          tenantId,
+          conversationId: id,
+        });
+        if (!result) return fail("not_found", "Conversation not found", 404, { requestId });
+
+        void audit({
+          action: "platform_admin.conversation_viewed",
+          actorUserId: adminCtx.user.id,
+          actingAsPlatformAdmin: true,
+          bypassedRls: true,
+          requestId,
+          organizationId: tenantId,
+          resourceType: "conversation",
+          resourceId: id,
+          metadata: { tenant_id: tenantId, data_plane: "dedicated" },
+        });
+        return ok(result, { requestId });
+      } catch (error) {
+        return fail("data_plane_unavailable", "Dedicated data plane query failed", 503, {
+          requestId,
+          details: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
 
   // Load conversation (cross-tenant — no org filter, intentional)
   const { data: conversation, error: convError } = await admin
@@ -125,3 +166,4 @@ export async function GET(
     { requestId },
   );
 }
+

@@ -645,6 +645,7 @@ export async function main(): Promise<void> {
     crmCfg: crmEdgeConfigFromEnv({
       SUPABASE_URL: env.NEXT_PUBLIC_SUPABASE_URL,
       SUPABASE_SERVICE_ROLE_KEY: env.SUPABASE_SERVICE_ROLE_KEY,
+      SUPABASE_SECRET_KEY: env.SUPABASE_SECRET_KEY,
     }),
     llmCfg: llmEdgeConfigFromEnv(env),
     knobs: turnKnobsFromEnv(env),
@@ -691,3 +692,4 @@ main().catch((err: unknown) => {
   // `SHUTDOWN_GRACE_MS` default deste worker para não pendurar o exit.
   void Sentry.flush(2000).finally(() => process.exit(1));
 });
+

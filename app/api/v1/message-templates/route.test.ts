@@ -33,6 +33,10 @@ vi.mock("@/lib/auth/require-role", () => ({ requireRole: h.guard }));
 vi.mock("@/lib/impersonate/support", () => ({ requireSupportWrite: h.apoio }));
 vi.mock("@/lib/audit", () => ({ audit: h.audit }));
 vi.mock("@/lib/supabase/server", () => ({ createClient: async () => ({ from: h.from }) }));
+vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: () => ({ from: h.from }) }));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({
+  getTenantDataClient: async (_organizationId: string, client: unknown) => client,
+}));
 
 import { POST } from "@/app/api/v1/message-templates/route";
 
@@ -184,3 +188,4 @@ describe("POST /api/v1/message-templates — idempotência", () => {
     expect(db.recibos).toHaveLength(0);
   });
 });
+

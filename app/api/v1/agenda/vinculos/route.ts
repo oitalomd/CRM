@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { requireRole } from "@/lib/auth/require-role";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { ok, fail } from "@/lib/api/wrappers";
 import { rotuloDoContato } from "@/lib/contacts/rotulo-do-contato";
 export async function GET(req: Request) {
@@ -12,7 +13,17 @@ export async function GET(req: Request) {
     .object({ contact_id: z.uuid().optional(), q: z.string().max(100).optional() })
     .safeParse(Object.fromEntries(new URL(req.url).searchParams));
   if (!input.success) return fail("validation_failed", "Confira o contato.", 422, { requestId });
-  const db = await createClient();
+  let db;
+  try {
+    db = await getTenantDataClient(auth.org.orgId, createAdminClient());
+  } catch (err) {
+    return fail(
+      "tenant_data_plane_unavailable",
+      err instanceof Error ? err.message : "Tenant data plane unavailable.",
+      503,
+      { requestId },
+    );
+  }
   let contacts = db
     .from("contacts")
     .select("id,name,display_name,phone_number")
@@ -54,3 +65,4 @@ export async function GET(req: Request) {
     { requestId },
   );
 }
+

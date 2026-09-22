@@ -24,6 +24,7 @@ import { audit } from "@/lib/audit";
 import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -51,19 +52,51 @@ async function handle(req: NextRequest): Promise<Response> {
   const admin = createAdminClient();
   const nowIso = new Date().toISOString();
 
-  const { data: due, error: queryError } = await admin
-    .from("conversations")
-    .select("id, organization_id, snoozed_at, last_inbound_at, status")
-    .not("snooze_until", "is", null)
-    .lte("snooze_until", nowIso)
-    .limit(SCAN_LIMIT);
-
-  if (queryError) {
-    logger.error("[snooze-watcher] query failed", { error: queryError.message, requestId });
-    return fail("internal_error", "Failed to query conversations.", 500, { requestId });
+  const { data: organizations, error: organizationsError } = await admin
+    .from("organizations")
+    .select("id");
+  if (organizationsError) {
+    logger.error("[snooze-watcher] failed to list organizations", {
+      error: organizationsError.message,
+      requestId,
+    });
+    return fail("internal_error", "Failed to query organizations.", 500, { requestId });
   }
 
-  const conversations = (due ?? []) as DueConversation[];
+  const conversations: DueConversation[] = [];
+  const dataClientByOrg = new Map<string, ReturnType<typeof createAdminClient>>();
+  for (const organization of organizations ?? []) {
+    let dataClient: ReturnType<typeof createAdminClient>;
+    try {
+      dataClient = await getTenantDataClient(organization.id, admin);
+    } catch (err) {
+      logger.warn("[snooze-watcher] data plane unavailable; organization skipped", {
+        organizationId: organization.id,
+        error: err instanceof Error ? err.message : String(err),
+        requestId,
+      });
+      continue;
+    }
+    dataClientByOrg.set(organization.id, dataClient);
+
+    const { data: due, error: queryError } = await dataClient
+      .from("conversations")
+      .select("id, organization_id, snoozed_at, last_inbound_at, status")
+      .eq("organization_id", organization.id)
+      .not("snooze_until", "is", null)
+      .lte("snooze_until", nowIso)
+      .limit(SCAN_LIMIT);
+    if (queryError) {
+      logger.error("[snooze-watcher] query by organization failed", {
+        organizationId: organization.id,
+        error: queryError.message,
+        requestId,
+      });
+      continue;
+    }
+    conversations.push(...((due ?? []) as DueConversation[]));
+  }
+  conversations.splice(SCAN_LIMIT);
   let reopened = 0;
 
   for (const c of conversations) {
@@ -78,12 +111,14 @@ async function handle(req: NextRequest): Promise<Response> {
     const clear = { snooze_until: null, snoozed_at: null, snoozed_by_user_id: null };
     const willReopen = !leadReplied && c.status !== "closed" && c.status !== "archived";
     const fields = willReopen ? { ...clear, status: "open", last_message_at: nowIso } : clear;
+    const dataClient = dataClientByOrg.get(c.organization_id);
+    if (!dataClient) continue;
 
     // O clear É o claim atômico: `.not("snooze_until","is",null)` garante que só
     // quem ainda vê o snooze não-nulo processa a row. Se dois ticks concorrentes
     // (double-schedule / curl manual durante o cron) leem a mesma row, só o
     // primeiro atualiza — o segundo recebe 0 linhas e pula, sem aviso duplicado.
-    const { data: claimed } = await admin
+    const { data: claimed } = await dataClient
       .from("conversations")
       .update(fields)
       .eq("id", c.id)
@@ -93,7 +128,7 @@ async function handle(req: NextRequest): Promise<Response> {
     if (!claimed) continue; // outro tick já processou esta conversa
 
     if (willReopen) {
-      await admin.from("agent_inbox_items").insert({
+      await dataClient.from("agent_inbox_items").insert({
         organization_id: c.organization_id,
         kind: "snooze_expired",
         severity: "warn",
@@ -127,3 +162,4 @@ export async function GET(req: NextRequest): Promise<Response> {
 export async function POST(req: NextRequest): Promise<Response> {
   return handle(req);
 }
+

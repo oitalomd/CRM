@@ -49,6 +49,7 @@ import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { canonicalPhoneBR } from "@/lib/channels/phone-variants";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -83,31 +84,66 @@ async function handle(req: NextRequest): Promise<Response> {
   const admin = createAdminClient();
   const cutoff = new Date(Date.now() - RETRY_AFTER_DAYS * 86_400_000).toISOString();
 
-  const { data: contatos, error: queryError } = await admin
-    .from("contacts")
-    .select("id, organization_id, wa_identity")
-    .is("phone_number", null)
-    .not("wa_identity", "is", null)
-    .eq("is_anonymized", false)
-    .or(`phone_lookup_at.is.null,phone_lookup_at.lt.${cutoff}`)
-    // Quem nunca foi perguntado entra antes de quem só está desatualizado — o
-    // contato que nunca teve número incomoda mais que o que já foi tentado.
-    .order("phone_lookup_at", { ascending: true, nullsFirst: true })
-    .limit(SCAN_LIMIT);
-
-  if (queryError) {
-    logger.error("[contact-phones] query failed", { detail: queryError.message, requestId });
-    return fail("internal_error", queryError.message, 500, { requestId });
+  const { data: organizations, error: organizationsError } = await admin
+    .from("organizations")
+    .select("id");
+  if (organizationsError) {
+    logger.error("[contact-phones] failed to list organizations", {
+      detail: organizationsError.message,
+      requestId,
+    });
+    return fail("internal_error", organizationsError.message, 500, { requestId });
   }
 
-  const rows = (contatos ?? []) as ContactRow[];
+  const rows: ContactRow[] = [];
+  const dataClientByOrg = new Map<string, ReturnType<typeof createAdminClient>>();
+  for (const organization of organizations ?? []) {
+    let dataClient: ReturnType<typeof createAdminClient>;
+    try {
+      dataClient = await getTenantDataClient(organization.id, admin);
+    } catch (err) {
+      logger.warn("[contact-phones] data plane unavailable; organization skipped", {
+        organizationId: organization.id,
+        detail: err instanceof Error ? err.message : String(err),
+        requestId,
+      });
+      continue;
+    }
+    dataClientByOrg.set(organization.id, dataClient);
+
+    const { data: contatos, error: queryError } = await dataClient
+      .from("contacts")
+      .select("id, organization_id, wa_identity")
+      .eq("organization_id", organization.id)
+      .is("phone_number", null)
+      .not("wa_identity", "is", null)
+      .eq("is_anonymized", false)
+      .or(`phone_lookup_at.is.null,phone_lookup_at.lt.${cutoff}`)
+      .order("phone_lookup_at", { ascending: true, nullsFirst: true })
+      .limit(SCAN_LIMIT);
+    if (queryError) {
+      logger.error("[contact-phones] query by organization failed", {
+        organizationId: organization.id,
+        detail: queryError.message,
+        requestId,
+      });
+      continue;
+    }
+    rows.push(...((contatos ?? []) as ContactRow[]));
+  }
+  rows.splice(SCAN_LIMIT);
   let resolvidos = 0;
   let semResposta = 0;
   let semCanal = 0;
 
   for (const c of rows) {
+    const dataClient = dataClientByOrg.get(c.organization_id);
+    if (!dataClient) {
+      semCanal++;
+      continue;
+    }
     const carimbar = async (phone: string | null): Promise<boolean> => {
-      const { data: afetadas } = await admin
+      const { data: afetadas } = await dataClient
         .from("contacts")
         .update({
           ...(phone ? { phone_number: canonicalPhoneBR(phone) } : {}),
@@ -136,7 +172,7 @@ async function handle(req: NextRequest): Promise<Response> {
     // identificador numa coluna própria, e nomeá-la faria este cron saber com
     // quem fala — o que o invariante 1 da doutrina proíbe, e o `lint:channels`
     // reprovou na primeira versão deste arquivo.
-    const { data: conversa } = await admin
+    const { data: conversa } = await dataClient
       .from("conversations")
       .select(`channel_sessions:channel_session_id (${CHANNEL_SESSION_REF_COLUMNS}, status, archived_at)`)
       .eq("organization_id", c.organization_id)
@@ -175,6 +211,7 @@ async function handle(req: NextRequest): Promise<Response> {
     try {
       phone = await adapter.resolvePhoneForIdentity({
         organizationId: c.organization_id,
+        dataClient,
         sessionRef,
         identity: c.wa_identity,
       });
@@ -201,3 +238,4 @@ async function handle(req: NextRequest): Promise<Response> {
 
 export const GET = handle;
 export const POST = handle;
+

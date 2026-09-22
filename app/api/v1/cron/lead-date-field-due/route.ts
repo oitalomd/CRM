@@ -77,6 +77,7 @@ import {
 import { autorizaCron } from "@/lib/auth/cron-auth";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -93,44 +94,61 @@ async function handle(req: NextRequest): Promise<Response> {
   const admin = createAdminClient();
   const agora = new Date();
 
-  const { data: regras, error: erroRegras } = await admin
-    .from("automation_rules")
-    .select("id, organization_id, trigger_config")
-    .eq("trigger_event", GATILHO_DE_DATA_DO_FUNIL)
-    .eq("is_active", true);
-
-  if (erroRegras) {
-    logger.error("[lead-date-field-due] consulta de regras falhou", {
-      error: erroRegras.message,
+  const { data: organizations, error: organizationsError } = await admin
+    .from("organizations")
+    .select("id, timezone");
+  if (organizationsError) {
+    logger.error("[lead-date-field-due] falha ao listar organizações", {
+      error: organizationsError.message,
       requestId,
     });
-    return fail("internal_error", "Falha ao buscar regras.", 500, { requestId });
+    return fail("internal_error", "Falha ao buscar organizações.", 500, { requestId });
   }
-
-  const todasAsRegras = regras ?? [];
-  if (todasAsRegras.length === 0) {
-    return ok(
-      { organizacoes: 0, regras: 0, examinados: 0, emitidos: 0, pulados: {} },
-      { requestId },
-    );
-  }
-
-  const orgsComRegra = [...new Set(todasAsRegras.map((r) => r.organization_id as string))];
-  const { data: organizacoes } = await admin
-    .from("organizations")
-    .select("id, timezone")
-    .in("id", orgsComRegra.slice(0, TAMANHO_DO_LOTE));
 
   let emitidos = 0;
   let examinados = 0;
+  let organizacoesComRegra = 0;
+  let regrasExaminadas = 0;
   const pulados: Record<string, number> = {};
   const pular = (motivo: string, quantos = 1) => {
     pulados[motivo] = (pulados[motivo] ?? 0) + quantos;
   };
 
-  for (const organizacao of organizacoes ?? []) {
+  for (const organizacao of organizations ?? []) {
     const org = organizacao.id as string;
     const fuso = fusoDaOrganizacao(organizacao.timezone as string | null);
+
+    let dataClient: ReturnType<typeof createAdminClient>;
+    try {
+      dataClient = await getTenantDataClient(org, admin);
+    } catch (err) {
+      logger.warn("[lead-date-field-due] data plane indisponível; organização ignorada", {
+        organizationId: org,
+        error: err instanceof Error ? err.message : String(err),
+        requestId,
+      });
+      pular("data_plane_indisponivel");
+      continue;
+    }
+
+    const { data: regras, error: erroRegras } = await dataClient
+      .from("automation_rules")
+      .select("id, organization_id, trigger_config")
+      .eq("organization_id", org)
+      .eq("trigger_event", GATILHO_DE_DATA_DO_FUNIL)
+      .eq("is_active", true);
+    if (erroRegras) {
+      logger.error("[lead-date-field-due] consulta de regras falhou", {
+        organization_id: org,
+        error: erroRegras.message,
+        requestId,
+      });
+      pular("consulta_falhou");
+      continue;
+    }
+    if (!regras?.length) continue;
+    organizacoesComRegra++;
+    regrasExaminadas += regras.length;
 
     let hojeLocal: string;
     try {
@@ -143,8 +161,7 @@ async function handle(req: NextRequest): Promise<Response> {
       continue;
     }
 
-    for (const regra of todasAsRegras) {
-      if (regra.organization_id !== org) continue;
+    for (const regra of regras) {
 
       const config = configDoGatilhoDeData(regra.trigger_config);
       if (!config) {
@@ -160,7 +177,7 @@ async function handle(req: NextRequest): Promise<Response> {
         continue;
       }
 
-      const { data: candidatos, error } = await admin
+      const { data: candidatos, error } = await dataClient
         .from("crm_leads")
         .select("id, custom_fields")
         .eq("organization_id", org)
@@ -205,7 +222,7 @@ async function handle(req: NextRequest): Promise<Response> {
       const jaEmitidos = new Set<string>();
       for (let i = 0; i < casam.length; i += TAMANHO_DO_LOTE) {
         const lote = casam.slice(i, i + TAMANHO_DO_LOTE).map((l) => l.id as string);
-        const { data: anteriores } = await admin
+        const { data: anteriores } = await dataClient
           .from("event_log")
           .select("entity_id")
           .eq("organization_id", org)
@@ -225,7 +242,7 @@ async function handle(req: NextRequest): Promise<Response> {
       if (novos.length < casam.length) pular("ja_emitido", casam.length - novos.length);
 
       for (const lead of novos) {
-        const { error: erroEvento } = await admin.rpc("emit_event" as never, {
+        const { error: erroEvento } = await dataClient.rpc("emit_event" as never, {
           p_event_type: GATILHO_DE_DATA_DO_FUNIL,
           p_entity_kind: "crm_lead",
           p_entity_id: lead,
@@ -272,8 +289,8 @@ async function handle(req: NextRequest): Promise<Response> {
 
   return ok(
     {
-      organizacoes: (organizacoes ?? []).length,
-      regras: todasAsRegras.length,
+      organizacoes: organizacoesComRegra,
+      regras: regrasExaminadas,
       examinados,
       emitidos,
       pulados,
@@ -284,3 +301,4 @@ async function handle(req: NextRequest): Promise<Response> {
 
 export const GET = handle;
 export const POST = handle;
+

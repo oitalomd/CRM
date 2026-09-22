@@ -17,6 +17,8 @@ import { requireRole } from "@/lib/auth/require-role";
 import { roleAtLeast } from "@/lib/auth/types";
 import { createTemplateSchema } from "@/lib/schemas/templates";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { traduzir } from "@/lib/i18n/dicionario";
 
 export const dynamic = "force-dynamic";
@@ -31,7 +33,7 @@ export async function GET(_req: NextRequest): Promise<Response> {
   if (!authz.ok) return authz.response;
   const { org } = authz;
 
-  const supabase = await createClient();
+  const supabase = await getTenantDataClient(org.orgId, await createClient());
   // RLS já limita a compartilhados + próprios da org ativa.
   const { data, error } = await supabase
     .from("message_templates")
@@ -75,7 +77,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     return fail("validation_error", "Idempotency-Key deve ser UUID", 400, { requestId });
   }
 
-  const supabase = await createClient();
+  const supabase = await getTenantDataClient(org.orgId, createAdminClient());
 
   /**
    * O efeito. Lança em falha de propósito: assim o helper propaga sem gravar
@@ -160,3 +162,4 @@ export async function POST(req: NextRequest): Promise<Response> {
     return fail("internal_error", "Erro ao criar template.", 500, { requestId });
   }
 }
+

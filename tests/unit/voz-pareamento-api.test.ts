@@ -24,6 +24,28 @@ const mocks = vi.hoisted(() => ({
   } | null,
   inseridas: [] as Record<string, unknown>[],
   atualizadas: [] as Record<string, unknown>[],
+  makeDb: () => ({
+    from: () => {
+      const query = {
+        select: () => query,
+        eq: () => query,
+        is: () => query,
+        maybeSingle: async () => ({ data: mocks.canal, error: null }),
+        insert: (linha: Record<string, unknown>) => {
+          mocks.inseridas.push(linha);
+          mocks.canal = { id: "canal", wacalls_session_id: String(linha.wacalls_session_id) };
+          return query;
+        },
+        update: (patch: Record<string, unknown>) => {
+          mocks.atualizadas.push(patch);
+          return query;
+        },
+        single: async () => ({ data: mocks.canal, error: null }),
+        then: (ok: (r: unknown) => unknown) => ok({ data: null, error: mocks.erroNaEscrita }),
+      };
+      return query;
+    },
+  }),
 }));
 const ORG = "11111111-1111-4111-8111-111111111111";
 vi.mock("@/lib/auth/require-role", () => ({
@@ -43,31 +65,10 @@ vi.mock("@/lib/wacalls/client", () => ({
   getWacallsClient: () => mocks,
   wacallsFriendlyError: () => "Falha no serviço de voz.",
 }));
-vi.mock("@/lib/supabase/server", () => ({
-  createClient: async () => ({
-    from: () => {
-      const query = {
-        select: () => query,
-        eq: () => query,
-        is: () => query,
-        maybeSingle: async () => ({ data: mocks.canal, error: null }),
-        insert: (linha: Record<string, unknown>) => {
-          mocks.inseridas.push(linha);
-          mocks.canal = { id: "canal", wacalls_session_id: String(linha.wacalls_session_id) };
-          return query;
-        },
-        update: (patch: Record<string, unknown>) => {
-          mocks.atualizadas.push(patch);
-          return query;
-        },
-        single: async () => ({ data: mocks.canal, error: null }),
-        // `await supabase.from(...).update(...).eq(...).eq(...)` — o fim da
-        // cadeia é awaitado direto.
-        then: (ok: (r: unknown) => unknown) => ok({ data: null, error: mocks.erroNaEscrita }),
-      };
-      return query;
-    },
-  }),
+vi.mock("@/lib/supabase/server", () => ({ createClient: async () => mocks.makeDb() }));
+vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: () => mocks.makeDb() }));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({
+  getTenantDataClient: async () => mocks.makeDb(),
 }));
 
 beforeEach(() => {
@@ -402,3 +403,4 @@ it("QR vencido encerra a espera — mas só o da sessão cujo QR está na tela",
   const tipos = [...texto.matchAll(/"type":"(\w+)"/g)].map((m) => m[1]);
   expect(tipos).toEqual(["qr", "expired"]);
 });
+

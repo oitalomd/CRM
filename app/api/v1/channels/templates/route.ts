@@ -21,6 +21,7 @@ import { normalizeRejectedReason } from "@/lib/channels/meta/webhook";
 import { deriveTemplateContract, describeAddress } from "@/lib/channels/meta/template-contract";
 import { syncTemplates } from "@/lib/channels/meta/template-sync";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -88,9 +89,9 @@ export async function GET(): Promise<NextResponse> {
   const r = await orgOrFail(requestId);
   if (!r.autorizado) return r.resposta;
 
-  const sessao = await metaSessionForOrg(r.orgId);
-  const admin = createAdminClient();
-  const { data, error } = await admin
+  const dataClient = await getTenantDataClient(r.orgId, createAdminClient());
+  const sessao = await metaSessionForOrg(r.orgId, dataClient);
+  const { data, error } = await dataClient
     .from("meta_templates")
     .select(
       "name, language, status, category, rejected_reason, quality_score, parameter_format, contract_hash, components, synced_at",
@@ -155,7 +156,8 @@ export async function POST(_req: NextRequest): Promise<NextResponse> {
   const r = await orgOrFail(requestId);
   if (!r.autorizado) return r.resposta;
 
-  const sessao = await metaSessionForOrg(r.orgId);
+  const dataClient = await getTenantDataClient(r.orgId, createAdminClient());
+  const sessao = await metaSessionForOrg(r.orgId, dataClient);
   if (!sessao?.wabaId) {
     return fail("invalid_request", "no_meta_channel", 400, { requestId });
   }
@@ -171,7 +173,7 @@ export async function POST(_req: NextRequest): Promise<NextResponse> {
   // `no_meta_channel`; com canal e sem credencial nenhuma (nem na sessão, nem no
   // ambiente) continua `missing_meta_token` 400 — o que muda é só de ONDE a
   // credencial sai quando existe.
-  const creds = await resolveMetaCreds(createAdminClient(), {
+  const creds = await resolveMetaCreds(dataClient, {
     organizationId: r.orgId,
     phoneNumberId: sessao.phoneNumberId ?? "",
   });
@@ -179,6 +181,7 @@ export async function POST(_req: NextRequest): Promise<NextResponse> {
 
   try {
     const counts = await syncTemplates({
+      db: dataClient,
       organizationId: r.orgId,
       wabaId: sessao.wabaId,
       token: creds.token,
@@ -193,3 +196,4 @@ export async function POST(_req: NextRequest): Promise<NextResponse> {
     });
   }
 }
+

@@ -11,6 +11,9 @@ vi.mock("@/lib/audit", () => ({
   isServiceRoleConfigured: vi.fn(() => true),
 }));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({
+  getTenantDataClient: vi.fn(async (_organizationId: string, controlPlane: unknown) => controlPlane),
+}));
 vi.mock("@/lib/agenda/google/sync-executor", () => ({ reconcileAppointment: vi.fn() }));
 vi.mock("@/lib/env", () => ({ env: { INTERNAL_CRON_SECRET: "cron", INTERNAL_SECRET: null } }));
 import { apenasDeMembrosAtivos } from "@/lib/agenda/google/membros";
@@ -22,8 +25,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   rows = [{ id: "appointment", organization_id: org }];
   filters = [];
+  let selectedOrganization: string | null = null;
   const chain: Record<string, unknown> = {
     select: () => chain,
+    eq: (column: string, value: unknown) => {
+      if (column === "organization_id") selectedOrganization = value as string;
+      return chain;
+    },
     or: (v: string) => {
       filters.push(v);
       return chain;
@@ -31,9 +39,24 @@ beforeEach(() => {
     lte: () => chain,
     not: () => chain,
     order: () => chain,
-    limit: async () => ({ data: rows, error: null }),
+    limit: async () => ({
+      data: selectedOrganization
+        ? rows.filter((row) => row.organization_id === selectedOrganization)
+        : rows,
+      error: null,
+    }),
   };
-  vi.mocked(createAdminClient).mockReturnValue({ from: () => chain } as never);
+  const organizations = {
+    select: () => ({
+      limit: async () => ({
+        data: [...new Set(rows.map((row) => row.organization_id))].map((id) => ({ id })),
+        error: null,
+      }),
+    }),
+  };
+  vi.mocked(createAdminClient).mockReturnValue({
+    from: (table: string) => (table === "organizations" ? organizations : chain),
+  } as never);
   vi.mocked(reconcileAppointment).mockResolvedValue("processed");
 });
 const request = (authorized = true) =>
@@ -110,3 +133,4 @@ it("titular redigido durante seleção é terminal sem auditar inação repetida
   expect(reconcileAppointment).toHaveBeenCalledTimes(2);
   expect(audit).not.toHaveBeenCalled();
 });
+

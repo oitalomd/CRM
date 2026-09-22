@@ -25,7 +25,8 @@ import { NextResponse } from "next/server";
 
 import { loadAuthUser, resolveActiveOrg } from "@/lib/auth/server";
 import { ARCHIVED_AT, queryTolerantToMissingArchived } from "@/lib/channels/archived";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -42,7 +43,7 @@ export async function GET(
   const activeOrg = await resolveActiveOrg(user);
   if (!activeOrg) return new NextResponse(null, { status: 403 });
 
-  const supabase = await createClient();
+  const supabase = await getTenantDataClient(activeOrg.orgId, createAdminClient());
   const buscar = (colunas: string) =>
     supabase
       .from("channel_sessions")
@@ -105,3 +106,4 @@ export async function GET(
     headers: { "content-type": ct, "cache-control": "no-store, max-age=0" },
   });
 }
+

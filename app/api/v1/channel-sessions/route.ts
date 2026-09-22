@@ -22,6 +22,7 @@ import { createChannelSchema } from "@/lib/schemas/channels";
 import { createClient } from "@/lib/supabase/server";
 import { getWahaClient } from "@/lib/waha/client";
 import { traduzir } from "@/lib/i18n/dicionario";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -35,7 +36,7 @@ export async function GET(): Promise<Response> {
   const activeOrg = await resolveActiveOrg(user);
   if (!activeOrg) return fail("forbidden_tenant", "Nenhuma organização ativa.", 403, { requestId });
 
-  const supabase = await createClient();
+  const supabase = await getTenantDataClient(activeOrg.orgId, await createClient());
   const base = () =>
     supabase
       .from("channel_sessions")
@@ -106,7 +107,8 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   try {
-    const result = await connectWahaChannel(await createClient(), createAdminClient(), waha, {
+    const dataClient = await getTenantDataClient(activeOrg.orgId, createAdminClient());
+    const result = await connectWahaChannel(dataClient, dataClient, waha, {
       organizationId: activeOrg.orgId, idempotencyKey: req.headers.get("Idempotency-Key") ?? "",
       userId: user.id, requestId, displayName: parsed.data.display_name,
     });
@@ -120,3 +122,4 @@ export async function POST(req: NextRequest): Promise<Response> {
     return fail("internal_error", t("Não foi possível concluir a conexão. Tente novamente."), 500, { requestId });
   }
 }
+

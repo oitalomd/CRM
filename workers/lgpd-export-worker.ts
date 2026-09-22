@@ -55,6 +55,7 @@ import {
   sendExportEmail,
 } from "@/lib/lgpd/email-delivery";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { marcaDaSaida } from "@/lib/branding/saida";
 
 const MAX_ATTEMPTS = 3;
@@ -90,7 +91,7 @@ export async function processLgpdExport(event: EventRow): Promise<HandlerResult>
     };
   }
 
-  const admin = createAdminClient();
+  const admin = await getTenantDataClient(orgId, createAdminClient());
 
   // 1. Load request.
   const req = await findLgpdRequest(orgId, requestId).catch((err: unknown) => {
@@ -168,6 +169,7 @@ export async function processLgpdExport(event: EventRow): Promise<HandlerResult>
       requestId,
       contactId: req.contact_id,
       externalCustomerId: req.external_customer_id,
+      admin,
     });
 
     // 4. Render PDF (with warning banner when unsigned).
@@ -468,3 +470,4 @@ export async function processLgpdExport(event: EventRow): Promise<HandlerResult>
     };
   }
 }
+

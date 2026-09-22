@@ -69,6 +69,14 @@ const schema = z.object({
   NEXT_PUBLIC_SUPABASE_URL: requiredAlways("NEXT_PUBLIC_SUPABASE_URL").url(),
   NEXT_PUBLIC_SUPABASE_ANON_KEY: requiredAlways("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
   SUPABASE_SERVICE_ROLE_KEY: requiredAlways("SUPABASE_SERVICE_ROLE_KEY"),
+  SUPABASE_SECRET_KEY: z.string().optional().default(""),
+
+  /**
+   * Rollout gate: quando true, um tenant sem data plane dedicado não pode
+   * continuar silenciosamente no banco compartilhado. O padrão permanece
+   * false durante a migração gradual; a promoção final deve ligar a chave.
+   */
+  TENANCY_REQUIRE_DEDICATED: z.string().optional().default("false"),
 
   // Cron / interno
   INTERNAL_SECRET: required("INTERNAL_SECRET"),
@@ -566,3 +574,4 @@ if (!env.IMPERSONATE_COOKIE_SECRET || env.IMPERSONATE_COOKIE_SECRET.length < 32)
 }
 
 export type Env = typeof env;
+

@@ -75,6 +75,7 @@ import { nomeDoContato } from "@/lib/contacts/rotulo-do-contato";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { moldeDoDegrau } from "@/lib/agenda/lembretes";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -262,39 +263,71 @@ async function handle(req: NextRequest): Promise<Response> {
   const admin = createAdminClient();
   const agora = new Date();
 
-  // `!inner` no tipo: só interessa compromisso cujo TIPO pede lembrete. O corte
-  // por `starts_at` usa a maior antecedência possível — o corte fino, que depende
-  // do `reminder_minutes_before` de cada linha, é `estaNaHora` logo abaixo.
-  const { data, error } = await admin
-    .from("calendar_appointments")
-    .select(
-      "id, organization_id, contact_id, title, starts_at, location_details, reminder_sent_offsets_minutes, " +
-        "calendar_event_types!inner(name, reminder_enabled, reminder_minutes_before, reminder_extra_offsets_minutes, reminder_template_name, reminder_body, reminder_bodies, location_details)",
-    )
-    .eq("status", "confirmed")
-    .eq("calendar_event_types.reminder_enabled", true)
-    .not("contact_id", "is", null)
-    // ⚠️ NÃO se filtra por `reminder_sent_at is null` aqui, e a ausência é a
-    // feature: com ela, o compromisso que recebeu o aviso de um dia nunca
-    // voltaria para receber o de três horas. Quem decide o que falta é
-    // `degrausPendentes`, sobre `reminder_sent_offsets_minutes`.
-    //
-    // O teto da varredura continua sendo o de sempre, e a ordem por `starts_at`
-    // crescente é o que o torna seguro: quando ele corta, corta os compromissos
-    // mais distantes, que só precisam do degrau mais antecipado e voltam nas
-    // próximas rodadas. Os próximos — os únicos com degrau curto vencendo —
-    // estão sempre no começo da lista.
-    .gt("starts_at", agora.toISOString())
-    .lte("starts_at", new Date(agora.getTime() + MAIOR_ANTECEDENCIA_MS).toISOString())
-    .order("starts_at", { ascending: true })
-    .limit(LIMITE_DA_VARREDURA);
-
-  if (error) {
-    logger.error("[agenda-reminder] consulta falhou", { error: error.message, requestId });
-    return fail("internal_error", "Falha ao buscar compromissos.", 500, { requestId });
+  // A organização é descoberta no control plane; compromissos e todos os
+  // dados operacionais abaixo vivem no data plane dedicado de cada tenant.
+  const { data: organizacoes, error: organizacoesError } = await admin
+    .from("organizations")
+    .select("id, timezone, locale");
+  if (organizacoesError) {
+    logger.error("[agenda-reminder] falha ao listar organizações", {
+      error: organizacoesError.message,
+      requestId,
+    });
+    return fail("internal_error", "Falha ao buscar organizações.", 500, { requestId });
   }
 
-  const linhas = (data ?? []) as unknown as CompromissoAVencer[];
+  const dataClientByOrg = new Map<string, ReturnType<typeof createAdminClient>>();
+  const organizacaoById = new Map(
+    (organizacoes ?? []).map((organizacao) => [organizacao.id, organizacao]),
+  );
+  const linhas: CompromissoAVencer[] = [];
+  for (const organizacao of organizacoes ?? []) {
+    let dataClient: ReturnType<typeof createAdminClient>;
+    try {
+      dataClient = await getTenantDataClient(organizacao.id, admin);
+    } catch (err) {
+      logger.warn("[agenda-reminder] data plane indisponível; organização ignorada", {
+        organizationId: organizacao.id,
+        error: err instanceof Error ? err.message : String(err),
+        requestId,
+      });
+      continue;
+    }
+    dataClientByOrg.set(organizacao.id, dataClient);
+
+    // `!inner` no tipo: só interessa compromisso cujo TIPO pede lembrete. O
+    // corte por `starts_at` usa a maior antecedência possível — o corte fino,
+    // que depende do `reminder_minutes_before`, é feito abaixo.
+    const { data, error } = await dataClient
+      .from("calendar_appointments")
+      .select(
+        "id, organization_id, contact_id, title, starts_at, location_details, reminder_sent_offsets_minutes, " +
+          "calendar_event_types!inner(name, reminder_enabled, reminder_minutes_before, reminder_extra_offsets_minutes, reminder_template_name, reminder_body, reminder_bodies, location_details)",
+      )
+      .eq("organization_id", organizacao.id)
+      .eq("status", "confirmed")
+      .eq("calendar_event_types.reminder_enabled", true)
+      .not("contact_id", "is", null)
+      .gt("starts_at", agora.toISOString())
+      .lte("starts_at", new Date(agora.getTime() + MAIOR_ANTECEDENCIA_MS).toISOString())
+      .order("starts_at", { ascending: true })
+      .limit(LIMITE_DA_VARREDURA);
+
+    if (error) {
+      logger.error("[agenda-reminder] consulta por organização falhou", {
+        organizationId: organizacao.id,
+        error: error.message,
+        requestId,
+      });
+      continue;
+    }
+    linhas.push(...((data ?? []) as unknown as CompromissoAVencer[]));
+  }
+  // Cada tenant retorna seus compromissos mais próximos; só então aplicamos o
+  // teto global para que uma organização com muito volume não esconda avisos
+  // mais urgentes de outra organização.
+  linhas.sort((a, b) => a.starts_at.localeCompare(b.starts_at));
+  linhas.splice(LIMITE_DA_VARREDURA);
   let enviados = 0;
   let pulados = 0;
   const motivos: Record<string, number> = {};
@@ -324,7 +357,13 @@ async function handle(req: NextRequest): Promise<Response> {
     // ⚠️ organization_id SEMPRE da linha do compromisso — ver o cabeçalho.
     const org = linha.organization_id;
 
-    const { data: contato } = await admin
+    const dataClient = dataClientByOrg.get(org);
+    if (!dataClient) {
+      pular("data_plane_indisponivel");
+      continue;
+    }
+
+    const { data: contato } = await dataClient
       .from("contacts")
       .select("id, name, display_name, phone_number, is_blocked")
       .eq("id", linha.contact_id)
@@ -344,7 +383,7 @@ async function handle(req: NextRequest): Promise<Response> {
       continue;
     }
 
-    const { data: canal } = await admin
+    const { data: canal } = await dataClient
       .from("channel_sessions")
       .select("id")
       .eq("organization_id", org)
@@ -357,21 +396,17 @@ async function handle(req: NextRequest): Promise<Response> {
       continue;
     }
 
-    const foraDaJanela = await adiarAteAJanelaAbrir(admin, org, canal.id);
+    const foraDaJanela = await adiarAteAJanelaAbrir(dataClient, org, canal.id);
     if (foraDaJanela) {
       pular("fora_da_janela");
       continue;
     }
 
-    const { data: organizacao } = await admin
-      .from("organizations")
-      .select("timezone, locale")
-      .eq("id", org)
-      .maybeSingle();
+    const organizacao = organizacaoById.get(org);
 
     let molde = moldeDoDegrau(tipo, Math.min(...pendentes));
     if (!molde && tipo.reminder_template_name) {
-      const { data: modelo } = await admin
+      const { data: modelo } = await dataClient
         .from("message_templates")
         .select("body")
         .eq("organization_id", org)
@@ -395,13 +430,13 @@ async function handle(req: NextRequest): Promise<Response> {
     await espacarEnvio(canal.id);
 
     try {
-      const conversaId = await ensureConversation(admin, org, contato.id, canal.id);
+      const conversaId = await ensureConversation(dataClient, org, contato.id, canal.id);
       // `webhook_source` é o ator que esta base dá a envio nascido de worker —
       // o mesmo que `lib/followup/enviar-texto-fixo.ts` usa. O `id` é o
       // compromisso, para o audit da mensagem correlacionar com a linha que a
       // originou.
       await sendMessageHandler(
-        admin,
+        dataClient,
         {
           organization_id: org,
           actor: { type: "webhook_source", id: linha.id },
@@ -416,7 +451,7 @@ async function handle(req: NextRequest): Promise<Response> {
       // Carimba TODOS os degraus vencidos, não só o que motivou este texto: os
       // outros já venceram, e deixá-los pendentes faria a próxima rodada mandar
       // a mesma mensagem de novo.
-      await admin
+      await dataClient
         .from("calendar_appointments")
         .update({
           reminder_sent_at: new Date().toISOString(),
@@ -451,3 +486,4 @@ async function handle(req: NextRequest): Promise<Response> {
 
 export const GET = handle;
 export const POST = handle;
+

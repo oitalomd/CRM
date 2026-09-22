@@ -68,7 +68,8 @@ import { audit } from "@/lib/audit";
 import { requireRole } from "@/lib/auth/require-role";
 import { PRESENCA_EXPIRA_SEGUNDOS } from "@/lib/atendimento/presenca";
 import { requireSupportWrite } from "@/lib/impersonate/support";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -88,7 +89,17 @@ export async function POST(_req: NextRequest): Promise<Response> {
   const { user: authUser, org: activeOrg } = authz;
 
   const agora = new Date();
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(activeOrg.orgId, createAdminClient());
+  } catch (err) {
+    return fail(
+      "tenant_data_plane_unavailable",
+      err instanceof Error ? err.message : "Tenant data plane unavailable.",
+      503,
+      { requestId },
+    );
+  }
 
   // Ler ANTES para saber se esta é a primeira batida: o `upsert` do PostgREST
   // devolve a linha, e não diz se ela nasceu agora. É a primeira que INSERE e
@@ -143,3 +154,4 @@ export async function POST(_req: NextRequest): Promise<Response> {
     { requestId },
   );
 }
+

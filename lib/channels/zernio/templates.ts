@@ -96,7 +96,7 @@ type EscopoDaConta = ChannelTenantScope & { sessionRef: string };
  * (issue #236).
  */
 async function creds(escopo: EscopoDaConta) {
-  const c = await resolveZernioCreds(createAdminClient(), {
+  const c = await resolveZernioCreds(escopo.dataClient ?? createAdminClient(), {
     organizationId: escopo.organizationId,
     accountId: escopo.sessionRef,
   });
@@ -206,3 +206,4 @@ export const zernioTemplateOps: ChannelTemplateOps = {
 };
 
 export type { ChannelTemplate, ChannelTemplateDraft };
+

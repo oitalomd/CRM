@@ -271,6 +271,32 @@ function makeSupabase(linhaCompleta: Row, espelhoDoModelo: Row | null = null) {
         };
         return { select: () => cadeia };
       }
+      if (tabela === "channel_sessions") {
+        const filtros: Record<string, unknown> = {};
+        const cadeia: Record<string, unknown> = {
+          eq: (col: string, val: unknown) => {
+            filtros[col] = val;
+            return cadeia;
+          },
+          is: () => cadeia,
+          maybeSingle: async () => {
+            const chave = `${filtros.organization_id ?? ""}|${filtros.meta_phone_number_id ?? ""}`;
+            const daOrg = credencialDaSessao.porOrg?.[chave];
+            const cifrado = credencialDaSessao.porOrg
+              ? (daOrg?.cifrado ?? null)
+              : credencialDaSessao.token
+                ? "\\xdeadbeef"
+                : null;
+            return {
+              data: cifrado
+                ? { meta_phone_number_id: String(filtros.meta_phone_number_id ?? "pn"), meta_token_encrypted: cifrado }
+                : null,
+              error: credencialDaSessao.erro,
+            };
+          },
+        };
+        return { select: () => cadeia };
+      }
       if (tabela === "messages") {
         return {
           insert: (row: Row) => {
@@ -323,7 +349,22 @@ function makeSupabase(linhaCompleta: Row, espelhoDoModelo: Row | null = null) {
       }
       throw new Error(`dublê: tabela inesperada '${tabela}'`);
     },
-    rpc: async () => ({ error: null }),
+    rpc: async (nome: string, args: { ciphertext?: string }) => {
+      if (nome !== "fn_decrypt_oauth" || !credencialDaSessao.decifravel) {
+        return { data: null, error: null };
+      }
+      const cifrado = String(args?.ciphertext ?? "");
+      const daOrg = Object.values(credencialDaSessao.porOrg ?? {}).find((s) => s.cifrado === cifrado);
+      return {
+        data: daOrg?.token ?? (credencialDaSessao.porOrg ? null : credencialDaSessao.token),
+        error: null,
+      };
+    },
+    storage: {
+      from: () => ({
+        createSignedUrl: async () => ({ data: { signedUrl: "https://signed.example/a.jpg" }, error: null }),
+      }),
+    },
   };
   return { supabase: client as unknown as SupabaseClient, estado };
 }
@@ -743,3 +784,4 @@ describe("o MODELO do canal oficial sai pela credencial da sessão, não pelo .e
     });
   });
 });
+

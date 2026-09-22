@@ -49,7 +49,8 @@ import { ok, fail } from "@/lib/api/wrappers";
 import { requireRole } from "@/lib/auth/require-role";
 import { requireSupportWrite } from "@/lib/impersonate/support";
 import { logger } from "@/lib/logger";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { exigirVozLigada } from "@/lib/voice/guarda";
 import {
   getWacallsClient,
@@ -125,7 +126,12 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(activeOrg.orgId, createAdminClient());
+  } catch (err) {
+    return fail("tenant_data_plane_unavailable", err instanceof Error ? err.message : "Tenant data plane unavailable.", 503, { requestId });
+  }
 
   // ⚠️ O CONSENTIMENTO É EXIGIDO AQUI, e este é o lugar certo: parear é o ato
   // que CRIA a exposição — a partir dele existe um segundo aparelho vinculado
@@ -306,3 +312,4 @@ function jaPareada(requestId: string): Response {
     { requestId },
   );
 }
+

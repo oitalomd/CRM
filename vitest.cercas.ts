@@ -49,7 +49,11 @@ function* arquivosDeTeste(raiz: string, dir: string): Generator<string> {
     if (FORA.has(entrada.name) || entrada.name.startsWith(".")) continue;
     const caminho = join(dir, entrada.name);
     if (entrada.isDirectory()) yield* arquivosDeTeste(raiz, caminho);
-    else if (/\.test\.tsx?$/.test(entrada.name)) yield relative(raiz, caminho);
+    else if (/\.test\.tsx?$/.test(entrada.name)) {
+      // O Vitest trata `include` como glob e espera separadores POSIX mesmo
+      // quando a configuração é carregada no Windows.
+      yield relative(raiz, caminho).replaceAll("\\", "/");
+    }
   }
 }
 
@@ -59,3 +63,4 @@ export function selecionarCercas(raiz: string): string[] {
     .filter((f) => ehCerca(readFileSync(join(raiz, f), "utf-8")))
     .sort();
 }
+

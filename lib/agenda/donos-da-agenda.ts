@@ -27,6 +27,7 @@
 import { isServiceRoleConfigured } from "@/lib/audit";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 /**
  * Os `user_id` com membership ativo na organização.
@@ -37,8 +38,9 @@ import { createClient } from "@/lib/supabase/server";
  */
 export async function donosDaAgenda(
   organizationId: string,
+  dataClient?: SupabaseClient,
 ): Promise<{ donos: string[]; erro: string | null }> {
-  const client = isServiceRoleConfigured() ? createAdminClient() : await createClient();
+  const client = dataClient ?? (isServiceRoleConfigured() ? createAdminClient() : await createClient());
   const { data, error } = await client
     .from("user_organizations")
     .select("user_id")
@@ -50,3 +52,4 @@ export async function donosDaAgenda(
   if (error) return { donos: [], erro: error.message };
   return { donos: (data ?? []).map((linha) => linha.user_id as string), erro: null };
 }
+

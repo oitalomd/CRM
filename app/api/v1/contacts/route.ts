@@ -25,6 +25,7 @@ import {
 import { perfilDaOrganizacao } from "@/lib/legal/perfil-do-pais";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 import { listContactsHandler, createContactHandler } from "./_handler";
 
@@ -114,7 +115,13 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   const auth = await resolveContactsAuth(req, requestId);
   if (!auth.ok) return auth.response;
-  const { organizationId, actor, supabase, idioma } = auth;
+  const { organizationId, actor, supabase: controlPlane, idioma } = auth;
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(organizationId, controlPlane);
+  } catch (err) {
+    return fail("tenant_data_plane_unavailable", err instanceof Error ? err.message : "Tenant data plane unavailable.", 503, { requestId });
+  }
   const t = (texto: string) => traduzir(texto, idioma ?? "pt-BR");
 
   const url = new URL(req.url);
@@ -159,7 +166,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (supportDenied) return supportDenied;
 
   const requestId = randomUUID();
-  const supabase = await createClient();
+  const controlPlane = await createClient();
   // spec 13 §4: escrita é agent+ (viewer é read-only).
   const authz = await requireRole("agent", { requestId, resource: "contacts" });
   if (!authz.ok) return authz.response;
@@ -169,7 +176,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   // O documento do titular é validado pela régua do PAÍS da organização (issue
   // #1033): quem decide é a coluna `organizations.country`, nunca o corpo da
   // requisição — mesma doutrina da moeda em `lib/catalogo/moeda-da-org.ts`.
-  const perfil = await perfilDaOrganizacao(supabase, activeOrg.orgId);
+  const perfil = await perfilDaOrganizacao(controlPlane, activeOrg.orgId);
 
   let input;
   try {
@@ -182,6 +189,13 @@ export async function POST(req: NextRequest): Promise<Response> {
       });
     }
     throw err;
+  }
+
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(activeOrg.orgId, controlPlane);
+  } catch (err) {
+    return fail("tenant_data_plane_unavailable", err instanceof Error ? err.message : "Tenant data plane unavailable.", 503, { requestId });
   }
 
   try {
@@ -206,3 +220,4 @@ export async function POST(req: NextRequest): Promise<Response> {
     throw err;
   }
 }
+

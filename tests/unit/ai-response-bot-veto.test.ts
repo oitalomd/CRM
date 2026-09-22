@@ -57,7 +57,8 @@ function makeAdminStub(tables: StubTables, queried: string[]) {
       then: (resolve: (v: unknown) => unknown) =>
         Promise.resolve({ data: result ? [result] : [], error: null }).then(resolve),
     };
-    queried.push(table);
+    // Registry lookup is control-plane bookkeeping, not a business-data read.
+    if (table !== "organization_data_planes") queried.push(table);
     return chain;
   };
   return { from };
@@ -148,3 +149,4 @@ describe("guard determinístico do bot — assignee_kind (G3-02)", () => {
     expect(result.reason).toBe("agent_inactive_or_missing");
   });
 });
+

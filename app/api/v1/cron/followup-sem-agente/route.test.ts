@@ -17,6 +17,9 @@ import { NextRequest } from "next/server";
 vi.mock("@/lib/env", () => ({ env: { INTERNAL_SECRET: "segredo", INTERNAL_CRON_SECRET: "" } }));
 vi.mock("@/lib/audit", () => ({ audit: vi.fn(async () => undefined) }));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({
+  getTenantDataClient: vi.fn(async (_organizationId: string, controlPlane: unknown) => controlPlane),
+}));
 
 import { audit } from "@/lib/audit";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -52,12 +55,25 @@ function admin(opts: {
   const { ponteiros, followupPorOrg = {}, avisoAbertoDe = new Set<string>(), cap } = opts;
   return {
     from(tabela: string) {
+      if (tabela === "organizations") {
+        const chain: Record<string, unknown> = {
+          limit: async () => ({ data: [{ id: ORG }, { id: OUTRA_ORG }], error: null }),
+        };
+        return { select: () => chain };
+      }
       if (tabela === "followup_flow_pointers") {
-        return {
-          select: () => ({
-            eq: () => ({ limit: async () => ({ data: ponteiros, error: null }) }),
+        let organizationId: string | null = null;
+        const chain: Record<string, unknown> = {
+          eq: (col: string, value: unknown) => {
+            if (col === "organization_id") organizationId = value as string;
+            return chain;
+          },
+          limit: async () => ({
+            data: ponteiros.filter((ponteiro) => !organizationId || ponteiro.organization_id === organizationId),
+            error: null,
           }),
         };
+        return { select: () => chain };
       }
       if (tabela === "ai_agent_versions") {
         const c: Record<string, unknown> = {
@@ -271,3 +287,4 @@ describe("GET /api/v1/cron/followup-sem-agente", () => {
     expect(cap.avisos).toEqual([]);
   });
 });
+

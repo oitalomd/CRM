@@ -19,6 +19,7 @@ import { audit } from "@/lib/audit";
 import { env } from "@/lib/env";
 import { valorDaInstalacao } from "@/lib/instalacao/config";
 import type { LgpdRequest } from "./types";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 export type AlarmThreshold = "data_request_d5" | "redact_d10";
 
@@ -40,6 +41,8 @@ export interface TriggerSlaAlarmArgs {
    * pinta o botão — sem ela o alarme sairia com a cor de outro produto.
    */
   marca: MarcaDeSaida;
+  /** Cliente do data plane do tenant; usado para a deduplicação persistida. */
+  dataClient?: SupabaseClient;
 }
 
 export interface TriggerSlaAlarmResult {
@@ -54,7 +57,7 @@ const DEDUP_MS = 24 * 60 * 60 * 1_000; // 24 h
 export async function triggerSlaAlarm(
   args: TriggerSlaAlarmArgs,
 ): Promise<TriggerSlaAlarmResult> {
-  const { request, threshold, organizationDpoEmail, organizationName, marca } = args;
+  const { request, threshold, organizationDpoEmail, organizationName, marca, dataClient } = args;
 
   // ──────────────────────────────────────────────────────────────────────────
   // 1. 24-hour dedup guard
@@ -193,7 +196,7 @@ Base legal: LGPD Lei nº 13.709/2018, Art. 18.`;
   // 5. Update request_payload.last_alarm_at (programmatic org filter)
   // ──────────────────────────────────────────────────────────────────────────
   try {
-    const supabaseAdmin = createAdminClient();
+    const supabaseAdmin = dataClient ?? createAdminClient();
     const { error } = await supabaseAdmin.rpc("jsonb_set_last_alarm_at", {
       p_id: request.id,
       p_organization_id: request.organization_id,
@@ -255,3 +258,4 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
+
