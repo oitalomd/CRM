@@ -21,6 +21,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { drainEventLog } from "@/lib/event-log/drain";
 import { ensureHandlersRegistered } from "@/lib/event-log/register-handlers";
 import { logger } from "@/lib/logger";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -44,7 +45,29 @@ async function handle(req: NextRequest): Promise<Response> {
 
   ensureHandlersRegistered();
   try {
-    const summary = await drainEventLog(createAdminClient());
+    const controlPlane = createAdminClient();
+    const { data: organizations, error } = await controlPlane.from("organizations").select("id").limit(50);
+    if (error) return fail("internal_error", "Failed to list organizations.", 500, { requestId });
+
+    const summary = { scanned: 0, done: 0, retried: 0, failed: 0, dead: 0, pulados: [] as string[], organizations: organizations?.length ?? 0, orgs_with_error: 0 };
+    for (const organization of organizations ?? []) {
+      const organizationId = organization.id as string;
+      try {
+        const tenant = await getTenantDataClient(organizationId, controlPlane);
+        const partial = await drainEventLog(tenant);
+        summary.scanned += partial.scanned;
+        summary.done += partial.done;
+        summary.retried += partial.retried;
+        summary.failed += partial.failed;
+        summary.dead += partial.dead;
+        summary.pulados.push(...(partial.pulados ?? []));
+      } catch (err) {
+        summary.orgs_with_error++;
+        logger.error("[event-log-drain.cron] organização falhou", {
+          organizationId, error: err instanceof Error ? err.message : String(err), requestId,
+        });
+      }
+    }
     return ok(summary, { requestId });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
@@ -60,3 +83,4 @@ export async function GET(req: NextRequest): Promise<Response> {
 export async function POST(req: NextRequest): Promise<Response> {
   return handle(req);
 }
+
