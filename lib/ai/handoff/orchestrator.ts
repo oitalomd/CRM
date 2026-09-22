@@ -31,6 +31,7 @@ import { assertServiceBoundarySupabase } from "@/lib/atendimento/origem";
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { logger } from "@/lib/logger";
 import { moverLeadParaEtapaDeHandoff } from "@/lib/leads/handoff-stage-move";
 import { decidirElegibilidadeDaConversaViaSupabase } from "@/lib/ai/elegibilidade/consulta-supabase";
@@ -71,6 +72,8 @@ export type HandoffReason =
   | "orcamento_de_ia";
 
 export interface TriggerHandoffInput {
+  /** Cliente já resolvido para o data plane do evento, quando chamado por worker. */
+  admin?: SupabaseClient;
   serviceBoundary?: ServiceBoundary;
   conversationId: string;
   organizationId: string;
@@ -175,7 +178,7 @@ export async function triggerHandoff(
   input: TriggerHandoffInput,
 ): Promise<TriggerHandoffResult> {
   try {
-    const admin = createAdminClient();
+    const admin = input.admin ?? createAdminClient();
     const guard = async () => {
       if (input.serviceBoundary) {
         if (input.serviceBoundary.organization_id !== input.organizationId || input.serviceBoundary.conversation_id !== input.conversationId) throw new Error("service_scope_mismatch");
@@ -580,3 +583,4 @@ async function falasPendentes(
     return [];
   }
 }
+
