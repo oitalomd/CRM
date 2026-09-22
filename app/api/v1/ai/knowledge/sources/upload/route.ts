@@ -31,6 +31,7 @@ import { ok, fail } from "@/lib/api/wrappers";
 import { requireRole } from "@/lib/auth/require-role";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { temChaveDeEmbedding } from "@/lib/ai/embeddings/chave";
 import { traduzir } from "@/lib/i18n/dicionario";
 import {
@@ -136,6 +137,17 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   const admin = createAdminClient();
+  let dataClient;
+  try {
+    dataClient = await getTenantDataClient(activeOrg.orgId, admin);
+  } catch (err) {
+    return fail(
+      "tenant_data_plane_unavailable",
+      err instanceof Error ? err.message : "Tenant data plane unavailable.",
+      503,
+      { requestId },
+    );
+  }
   const blobId = randomUUID();
   const blobPath = `${activeOrg.orgId}/${blobId}.${ext}`;
   const fileBuffer = Buffer.from(await file.arrayBuffer());
@@ -154,7 +166,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     csv: "text/csv",
   } as const;
 
-  const { error: uploadErr } = await admin.storage
+  const { error: uploadErr } = await dataClient.storage
     .from(BUCKET_DE_CONHECIMENTO)
     .upload(blobPath, fileBuffer, { contentType: MIME_POR_EXTENSAO[ext], upsert: false });
 
@@ -166,9 +178,9 @@ export async function POST(req: NextRequest): Promise<Response> {
   // Recusar o ilegível ENQUANTO a pessoa olha para a tela. Descobrir isso só
   // quando o worker rodar transformaria um erro corrigível num silêncio.
   try {
-    await extrairTextoDoArquivo(blobPath, ext);
+    await extrairTextoDoArquivo(blobPath, ext, dataClient);
   } catch (err) {
-    await admin.storage.from(BUCKET_DE_CONHECIMENTO).remove([blobPath]);
+    await dataClient.storage.from(BUCKET_DE_CONHECIMENTO).remove([blobPath]);
     if (err instanceof ErroDeExtracao) {
       // A resposta leva só a chave; a causa só sobrevive neste log.
       if (err.detalhe) console.warn("[conhecimento-upload] extração recusada:", err.detalhe);
@@ -178,7 +190,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     return fail("internal_error", "Erro ao ler o arquivo.", 500, { requestId });
   }
 
-  const { data: ks, error: ksErr } = await admin
+  const { data: ks, error: ksErr } = await dataClient
     .from("ai_knowledge_sources")
     .insert({
       organization_id: activeOrg.orgId,
@@ -201,7 +213,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     .single();
 
   if (ksErr || !ks) {
-    await admin.storage.from(BUCKET_DE_CONHECIMENTO).remove([blobPath]);
+    await dataClient.storage.from(BUCKET_DE_CONHECIMENTO).remove([blobPath]);
     if (ksErr?.code === "23505") {
       return fail(
         "knowledge_source_name_in_use",
@@ -235,3 +247,4 @@ export async function POST(req: NextRequest): Promise<Response> {
     { status: 201, requestId },
   );
 }
+
