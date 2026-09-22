@@ -6,6 +6,7 @@ const deps = vi.hoisted(() => ({
   audit: vi.fn(),
   criarClientDeSessao: vi.fn(),
   criarClientAdmin: vi.fn(),
+  tenantData: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/require-role", () => ({ requireRole: deps.role }));
@@ -13,6 +14,7 @@ vi.mock("@/lib/impersonate/support", () => ({ requireSupportWrite: deps.support 
 vi.mock("@/lib/audit", () => ({ audit: deps.audit }));
 vi.mock("@/lib/supabase/server", () => ({ createClient: deps.criarClientDeSessao }));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: deps.criarClientAdmin }));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({ getTenantDataClient: deps.tenantData }));
 
 import { GET, POST } from "@/app/api/v1/agenda/enderecos/route";
 
@@ -60,16 +62,22 @@ beforeEach(() => {
     user: { id: EU },
     org: { orgId: ORG },
   });
+  deps.tenantData.mockImplementation(async (_org: string, shared: unknown) => shared);
 });
 
+function usarDataPlane(client: unknown) {
+  deps.criarClientAdmin.mockReturnValue(client);
+  deps.tenantData.mockResolvedValue(client);
+}
+
 describe("POST /api/v1/agenda/enderecos", () => {
-  it("usa o client de SESSÃO — a RLS é quem autoriza, e o admin bypassaria", async () => {
+  it("usa o data plane do tenant e preserva a org validada", async () => {
     const { client, capturado } = clientQueInsere({ data: { address: "Sala 2" } });
-    deps.criarClientDeSessao.mockResolvedValue(client);
+    usarDataPlane(client);
 
     const res = await POST(req({ address: "Sala 2" }));
     expect(res.status).toBe(201);
-    expect(deps.criarClientAdmin).not.toHaveBeenCalled();
+    expect(deps.criarClientAdmin).toHaveBeenCalled();
     expect(capturado.payload?.organization_id).toBe(ORG);
     expect(capturado.payload?.address).toBe("Sala 2");
     expect(capturado.payload?.created_by).toBe(EU);
@@ -80,7 +88,7 @@ describe("POST /api/v1/agenda/enderecos", () => {
 
   it("ignora organization_id do body — a org é da sessão", async () => {
     const { client, capturado } = clientQueInsere({ data: { address: "Sala 2" } });
-    deps.criarClientDeSessao.mockResolvedValue(client);
+    usarDataPlane(client);
 
     await POST(req({ address: "Sala 2", organization_id: "33333333-3333-4333-8333-333333333333" }));
     expect(capturado.payload?.organization_id).toBe(ORG);
@@ -90,7 +98,7 @@ describe("POST /api/v1/agenda/enderecos", () => {
     const { client } = clientQueInsere({
       error: { code: "23505", message: "duplicate key" },
     });
-    deps.criarClientDeSessao.mockResolvedValue(client);
+    usarDataPlane(client);
 
     const res = await POST(req({ address: "Sala 2" }));
     expect(res.status).toBe(200);
@@ -100,14 +108,14 @@ describe("POST /api/v1/agenda/enderecos", () => {
   it("vazio não chega à escrita", async () => {
     const res = await POST(req({ address: "   " }));
     expect(res.status).toBe(422);
-    expect(deps.criarClientDeSessao).not.toHaveBeenCalled();
+    expect(deps.criarClientAdmin).not.toHaveBeenCalled();
   });
 
   it("suporte somente leitura é barrado antes do efeito", async () => {
     deps.support.mockResolvedValue(new Response("readonly", { status: 403 }));
     expect((await POST(req({ address: "Sala 2" }))).status).toBe(403);
     expect(deps.role).not.toHaveBeenCalled();
-    expect(deps.criarClientDeSessao).not.toHaveBeenCalled();
+    expect(deps.criarClientAdmin).not.toHaveBeenCalled();
   });
 });
 
@@ -143,7 +151,7 @@ describe("GET /api/v1/agenda/enderecos", () => {
 
   it("filtra organization_id da sessão em cada fonte — nunca do query string", async () => {
     const { client, orgs } = clientQueLista();
-    deps.criarClientDeSessao.mockResolvedValue(client);
+    usarDataPlane(client);
 
     const res = await GET(
       new Request(`http://localhost/api/v1/agenda/enderecos?organization_id=${"3".repeat(36)}`),
@@ -152,3 +160,4 @@ describe("GET /api/v1/agenda/enderecos", () => {
     expect(orgs).toEqual([ORG, ORG, ORG]);
   });
 });
+
