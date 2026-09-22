@@ -10,7 +10,7 @@
  * consume asynchronously.
  */
 
-import { createAdminClient } from "@/lib/supabase/admin";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { chunkText } from "@/lib/ai/rag/chunker";
 import { extractPdfText, PdfExtractError } from "@/lib/ai/rag/extractors/pdf";
 import { extractMarkdownText } from "@/lib/ai/rag/extractors/markdown";
@@ -78,6 +78,7 @@ export interface IngestPolicyArgs {
   knowledgeSourceId: string;
   blobPath: string;
   ext: "pdf" | "md";
+  dataClient: SupabaseClient;
 }
 
 export interface IngestPolicyResult {
@@ -93,10 +94,10 @@ export interface IngestPolicyResult {
  */
 export async function ingestPolicyFile(args: IngestPolicyArgs): Promise<IngestPolicyResult> {
   const { organizationId, knowledgeSourceId, blobPath, ext } = args;
-  const admin = createAdminClient();
+  const dataClient = args.dataClient;
 
   // Download blob from private ai-policy bucket
-  const { data: blob, error: downloadErr } = await admin.storage
+  const { data: blob, error: downloadErr } = await dataClient.storage
     .from("ai-policy")
     .download(blobPath);
 
@@ -124,3 +125,4 @@ export async function ingestPolicyFile(args: IngestPolicyArgs): Promise<IngestPo
 
   return { chunkCount: chunks.length };
 }
+
