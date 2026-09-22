@@ -20,6 +20,7 @@ import { audit } from "@/lib/audit";
 import { env } from "@/lib/env";
 import { ingestConversationsBatch } from "@/lib/ai/rag/ingest/conversations";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -81,6 +82,7 @@ export async function GET(req: NextRequest): Promise<Response> {
         organizationId: agent.organization_id,
         agentId: agent.id,
         sinceTs,
+        dataClient: await getTenantDataClient(agent.organization_id, admin),
       });
       orgsProcessed++;
       totalProcessed += result.processed;
@@ -135,3 +137,4 @@ export async function GET(req: NextRequest): Promise<Response> {
     { requestId },
   );
 }
+
