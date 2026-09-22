@@ -1,8 +1,10 @@
 import { Pool } from "pg";
+import { assertDataPlaneCompatibility } from "@/lib/tenancy/data-plane-schema";
 
 type Column = { name: string; ordinal: number };
 type ForeignKey = {
   column: string;
+  referencedSchema: string;
   referencedTable: string;
   referencedColumn: string;
 };
@@ -75,10 +77,12 @@ async function loadTables(pool: Pool): Promise<Map<string, Table>> {
   const foreignKeys = await pool.query<{
     table_name: string;
     column_name: string;
+    foreign_table_schema: string;
     foreign_table_name: string;
     foreign_column_name: string;
   }>(
-    `select kcu.table_name, kcu.column_name, ccu.table_name as foreign_table_name,
+    `select kcu.table_name, kcu.column_name, ccu.table_schema as foreign_table_schema,
+            ccu.table_name as foreign_table_name,
             ccu.column_name as foreign_column_name
        from information_schema.table_constraints tc
        join information_schema.key_column_usage kcu
@@ -87,12 +91,12 @@ async function loadTables(pool: Pool): Promise<Map<string, Table>> {
         and kcu.table_name = tc.table_name
        join information_schema.constraint_column_usage ccu
          on ccu.constraint_name = tc.constraint_name
-        and ccu.table_schema = tc.table_schema
       where tc.table_schema = 'public' and tc.constraint_type = 'FOREIGN KEY'`,
   );
   for (const row of foreignKeys.rows) {
     tables.get(row.table_name)?.foreignKeys.push({
       column: row.column_name,
+      referencedSchema: row.foreign_table_schema,
       referencedTable: row.foreign_table_name,
       referencedColumn: row.foreign_column_name,
     });
@@ -121,6 +125,7 @@ function includeDependentTables(
     for (const [name, table] of all) {
       if (CONTROL_ONLY.has(name) || selected.has(name) || !target.has(name)) continue;
       const dependency = table.foreignKeys.some((foreignKey) => {
+        if (foreignKey.referencedSchema !== "public") return false;
         const parent = selected.get(foreignKey.referencedTable);
         return parent?.columns.some((column) => column.name === "organization_id");
       });
@@ -157,6 +162,7 @@ function predicateFor(table: Table, selected: Map<string, Table>): { sql: string
     return { sql: `${qid("organization_id")} = $1`, params: ["organization_id"] };
   }
   const predicates = table.foreignKeys.flatMap((foreignKey) => {
+    if (foreignKey.referencedSchema !== "public") return [];
     const parent = selected.get(foreignKey.referencedTable);
     if (!parent || !parent.columns.some((column) => column.name === "organization_id")) return [];
     return [`exists (select 1 from ${tableRef(parent.name)} p where p.${qid(foreignKey.referencedColumn)} = t.${qid(foreignKey.column)} and p.${qid("organization_id")} = $1)`];
@@ -199,6 +205,43 @@ async function copyTable(
   return copied;
 }
 
+async function assertAuthReferences(
+  source: Pool,
+  target: Pool,
+  tables: Map<string, Table>,
+  plan: Array<{ table: string; predicate: string }>,
+  organizationId: string,
+): Promise<void> {
+  const missing: Array<{ table: string; column: string; count: number }> = [];
+  for (const item of plan) {
+    const table = tables.get(item.table)!;
+    for (const foreignKey of table.foreignKeys) {
+      if (foreignKey.referencedSchema !== "auth" || foreignKey.referencedTable !== "users") continue;
+      const ids = await source.query<{ id: string }>(
+        `select distinct t.${qid(foreignKey.column)}::text as id
+           from ${tableRef(table.name)} t
+          where (${item.predicate}) and t.${qid(foreignKey.column)} is not null`,
+        [organizationId],
+      );
+      if (!ids.rows.length) continue;
+      let found = 0;
+      try {
+        const result = await target.query<{ count: string }>(
+          `select count(*)::text as count from auth.users where id::text = any($1::text[])`,
+          [ids.rows.map((row) => row.id)],
+        );
+        found = Number(result.rows[0]?.count ?? 0);
+      } catch (error) {
+        throw new Error(`data_plane_auth_users_unavailable:${error instanceof Error ? error.message : String(error)}`);
+      }
+      if (found !== ids.rows.length) {
+        missing.push({ table: table.name, column: foreignKey.column, count: ids.rows.length - found });
+      }
+    }
+  }
+  if (missing.length) throw new Error(`data_plane_auth_references_missing:${JSON.stringify(missing)}`);
+}
+
 async function main() {
   const sourceUrl = process.env.SOURCE_DATABASE_URL;
   const targetUrl = process.env.DATA_PLANE_DATABASE_URL;
@@ -210,6 +253,7 @@ async function main() {
   const source = new Pool({ connectionString: sourceUrl, max: 2, application_name: "deskcomm:tenant-migration-source" });
   const target = new Pool({ connectionString: targetUrl, max: 2, application_name: "deskcomm:tenant-migration-target" });
   try {
+    await assertDataPlaneCompatibility(target);
     const [sourceTables, targetTables] = await Promise.all([loadTables(source), loadTables(target)]);
     const selected = scopedTables(sourceTables, targetTables);
     includeDependentTables(sourceTables, targetTables, selected);
@@ -225,6 +269,14 @@ async function main() {
       ]);
       plan.push({ table: name, sourceRows, targetRows, predicate: predicate.sql });
     }
+
+    await assertAuthReferences(
+      source,
+      target,
+      selected,
+      plan.map(({ table, predicate }) => ({ table, predicate })),
+      organizationId,
+    );
 
     const apply = hasFlag("--apply");
     if (apply && !hasFlag("--confirm-org")) throw new Error("A escrita exige --apply --confirm-org <mesmo UUID>");
