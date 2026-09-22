@@ -84,23 +84,56 @@ async function handle(req: NextRequest): Promise<Response> {
 
   const admin = createAdminClient();
 
-  // Arquivada não é vigiada: ela foi desligada de propósito, e avisar que uma
-  // conexão aposentada está parada é exatamente o ruído que faz o operador
-  // ignorar a Central.
-  const { data, error } = await admin
-    .from("channel_sessions")
-    .select(
-      `id, organization_id, status, display_name, phone_number, archived_at, ${CHANNEL_SESSION_REF_COLUMNS}`,
-    )
-    .is("archived_at", null)
-    .limit(LIMITE);
-
-  if (error) {
-    logger.error("[channel-health] query falhou", { detail: error.message, requestId });
-    return fail("internal_error", error.message, 500, { requestId });
+  const { data: organizations, error: organizationsError } = await admin
+    .from("organizations")
+    .select("id");
+  if (organizationsError) {
+    logger.error("[channel-health] falha ao listar organizações", {
+      detail: organizationsError.message,
+      requestId,
+    });
+    return fail("internal_error", organizationsError.message, 500, { requestId });
   }
 
-  const sessoes = (data ?? []) as LinhaDeSessao[];
+  const sessoes: LinhaDeSessao[] = [];
+  const dataClientByOrg = new Map<string, ReturnType<typeof createAdminClient>>();
+  for (const organization of organizations ?? []) {
+    if (sessoes.length >= LIMITE) break;
+    let dataClient: ReturnType<typeof createAdminClient>;
+    try {
+      dataClient = await getTenantDataClient(organization.id, admin);
+    } catch (err) {
+      logger.warn("[channel-health] data plane indisponível; organização ignorada", {
+        organizationId: organization.id,
+        detail: err instanceof Error ? err.message : String(err),
+        requestId,
+      });
+      continue;
+    }
+    dataClientByOrg.set(organization.id, dataClient);
+
+    // Arquivada não é vigiada: ela foi desligada de propósito, e avisar que uma
+    // conexão aposentada está parada é exatamente o ruído que faz o operador
+    // ignorar a Central.
+    const { data, error } = await dataClient
+      .from("channel_sessions")
+      .select(
+        `id, organization_id, status, display_name, phone_number, archived_at, ${CHANNEL_SESSION_REF_COLUMNS}`,
+      )
+      .eq("organization_id", organization.id)
+      .is("archived_at", null)
+      .limit(LIMITE - sessoes.length);
+    if (error) {
+      logger.error("[channel-health] query por organização falhou", {
+        organizationId: organization.id,
+        detail: error.message,
+        requestId,
+      });
+      continue;
+    }
+    sessoes.push(...((data ?? []) as LinhaDeSessao[]));
+  }
+
   let verificadas = 0;
   const desfechos: Record<string, number> = {};
   let ignoradas = 0;
@@ -120,6 +153,11 @@ async function handle(req: NextRequest): Promise<Response> {
     }
 
     try {
+      const dataClient = dataClientByOrg.get(s.organization_id);
+      if (!dataClient) {
+        ignoradas++;
+        continue;
+      }
       // Pergunta ao CANAL, não ao provider: quem tem sessão para consultar
       // implementa `checkHealth`; quem não tem simplesmente não o expõe, e o
       // vigia segue adiante sem nunca perguntar QUEM ele é — o invariante 1 da
@@ -138,7 +176,7 @@ async function handle(req: NextRequest): Promise<Response> {
 
       const saude = await adapter.checkHealth({
         organizationId: s.organization_id,
-        dataClient: await getTenantDataClient(s.organization_id, admin),
+        dataClient,
         sessionRef,
       });
       verificadas++;
@@ -150,7 +188,7 @@ async function handle(req: NextRequest): Promise<Response> {
       if (saude.reachable && saude.status && saude.status !== s.status) {
         statusFinal = saude.status;
         const agora = new Date().toISOString();
-        await admin
+        await dataClient
           .from("channel_sessions")
           .update({ status: saude.status, last_status_change_at: agora })
           .eq("id", s.id)
@@ -159,7 +197,7 @@ async function handle(req: NextRequest): Promise<Response> {
 
       const apelido = s.display_name ?? s.phone_number ?? "sem nome";
       const desfecho = await sincronizarSaudeDaConexao(
-        admin,
+        dataClient,
         { id: s.id, organization_id: s.organization_id, status: statusFinal },
         saude,
         apelido,
