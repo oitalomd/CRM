@@ -50,6 +50,7 @@ import {
   exigeAgente,
   type FollowupGateDb,
 } from "@/lib/followup/agent-followup-gate";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -95,21 +96,52 @@ async function handle(req: NextRequest): Promise<Response> {
 
   const admin = createAdminClient();
 
-  const { data, error } = await admin
-    .from("followup_flow_pointers")
-    .select("id, organization_id, name, trigger_config")
-    .eq("status", "active")
+  const { data: organizations, error: organizationsError } = await admin
+    .from("organizations")
+    .select("id")
     .limit(LIMITE_DA_VARREDURA);
+  if (organizationsError) {
+    logger.error("[followup-sem-agente] falha ao listar organizações", {
+      error: organizationsError.message,
+      requestId,
+    });
+    return fail("internal_error", "Falha ao buscar organizações.", 500, { requestId });
+  }
 
-  if (error) {
-    logger.error("[followup-sem-agente] consulta falhou", { error: error.message, requestId });
-    return fail("internal_error", "Falha ao buscar fluxos publicados.", 500, { requestId });
+  const dataClientByOrg = new Map<string, ReturnType<typeof createAdminClient>>();
+  const rows: Array<Record<string, unknown>> = [];
+  for (const organization of organizations ?? []) {
+    try {
+      const dataClient = await getTenantDataClient(organization.id, admin);
+      dataClientByOrg.set(organization.id, dataClient);
+      const { data, error } = await dataClient
+        .from("followup_flow_pointers")
+        .select("id, organization_id, name, trigger_config")
+        .eq("organization_id", organization.id)
+        .eq("status", "active")
+        .limit(LIMITE_DA_VARREDURA);
+      if (error) {
+        logger.error("[followup-sem-agente] consulta por organização falhou", {
+          organizationId: organization.id,
+          error: error.message,
+          requestId,
+        });
+        continue;
+      }
+      rows.push(...((data ?? []) as Array<Record<string, unknown>>));
+    } catch (err) {
+      logger.warn("[followup-sem-agente] data plane indisponível; organização ignorada", {
+        organizationId: organization.id,
+        error: err instanceof Error ? err.message : String(err),
+        requestId,
+      });
+    }
   }
 
   // O recorte por kind acontece AQUI, e não no PostgREST, para o vocabulário
   // viver num lugar só (`GATILHOS_QUE_EXIGEM_AGENTE`). Uma lista repetida num
   // filtro `trigger_config->>kind=in.(...)` divergiria no primeiro gatilho novo.
-  const candidatos: PonteiroDesarmado[] = (data ?? []).flatMap((linha) => {
+  const candidatos: PonteiroDesarmado[] = rows.flatMap((linha) => {
     const cfg = linha.trigger_config as { kind?: unknown } | null;
     const kind = typeof cfg?.kind === "string" ? cfg.kind : "manual";
     return exigeAgente(kind)
@@ -125,10 +157,12 @@ async function handle(req: NextRequest): Promise<Response> {
   // Uma leitura de agentes por ORGANIZAÇÃO, não por fluxo: `loadEnabled…` varre
   // as versões publicadas da org inteira, e uma clínica com quatro modelos
   // instalados pagaria a mesma varredura quatro vezes por rodada.
-  const gateDb: FollowupGateDb = createSupabaseFollowupGateDb(admin);
   const armadosPorOrg = new Map<string, Set<string>>();
   for (const orgId of new Set(candidatos.map((c) => c.organization_id))) {
     try {
+      const dataClient = dataClientByOrg.get(orgId);
+      if (!dataClient) continue;
+      const gateDb: FollowupGateDb = createSupabaseFollowupGateDb(dataClient);
       const agentes = await gateDb.loadEnabledPublishedFollowupAgents(orgId);
       armadosPorOrg.set(orgId, new Set(agentes.flatMap((a) => a.pointerIds)));
     } catch (err) {
@@ -149,8 +183,10 @@ async function handle(req: NextRequest): Promise<Response> {
   for (const ponteiro of candidatos) {
     const armados = armadosPorOrg.get(ponteiro.organization_id);
     if (!armados) continue; // leitura de agentes falhou; tenta na rodada seguinte
+    const dataClient = dataClientByOrg.get(ponteiro.organization_id);
+    if (!dataClient) continue;
 
-    const { data: avisoAberto } = await admin
+    const { data: avisoAberto } = await dataClient
       .from("agent_inbox_items")
       .select("id")
       .eq("organization_id", ponteiro.organization_id)
@@ -162,7 +198,7 @@ async function handle(req: NextRequest): Promise<Response> {
     if (armados.has(ponteiro.id)) {
       // O vínculo apareceu: o aviso perdeu o assunto e é fechado por quem o abriu.
       if (!avisoAberto) continue;
-      const { error: erroFechar } = await admin
+      const { error: erroFechar } = await dataClient
         .from("agent_inbox_items")
         .update({ status: "resolved" })
         .eq("id", avisoAberto.id)
@@ -184,7 +220,7 @@ async function handle(req: NextRequest): Promise<Response> {
       continue;
     }
 
-    const { error: erroAviso } = await admin.from("agent_inbox_items").insert({
+    const { error: erroAviso } = await dataClient.from("agent_inbox_items").insert({
       organization_id: ponteiro.organization_id,
       kind: KIND,
       // `warn` e não `critical`: nada está fora do ar, e o vermelho é para o que
@@ -229,3 +265,4 @@ async function handle(req: NextRequest): Promise<Response> {
 
 export const GET = handle;
 export const POST = handle;
+
