@@ -18,6 +18,7 @@ import { fail } from "@/lib/api/wrappers";
 import { requireRole } from "@/lib/auth/require-role";
 import { isServiceRoleConfigured } from "@/lib/audit";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { ROLE_RANK, type AuthUser, type Role } from "@/lib/auth/types";
 
 vi.mock("@/lib/auth/require-role", () => ({ requireRole: vi.fn() }));
@@ -27,6 +28,7 @@ vi.mock("@/lib/audit", () => ({
   audit: vi.fn(async () => undefined),
 }));
 vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({ getTenantDataClient: vi.fn() }));
 
 const ORG = "22222222-2222-4222-8222-222222222222";
 const ANA = "11111111-1111-4111-8111-111111111111";
@@ -127,6 +129,7 @@ describe("GET /api/v1/attendants/availability", () => {
     vi.mocked(createAdminClient).mockReturnValue(
       fazerAdmin(EQUIPE) as unknown as ReturnType<typeof createAdminClient>,
     );
+    vi.mocked(getTenantDataClient).mockImplementation(async (_orgId, admin) => admin);
 
     const res = await chamar();
     expect(res.status).toBe(200);
@@ -164,6 +167,7 @@ describe("GET /api/v1/attendants/availability", () => {
     vi.mocked(createAdminClient).mockReturnValue(
       fazerAdmin(EQUIPE) as unknown as ReturnType<typeof createAdminClient>,
     );
+    vi.mocked(getTenantDataClient).mockImplementation(async (_orgId, admin) => admin);
 
     const body = (await (await chamar()).json()) as {
       data: Array<{
@@ -201,6 +205,7 @@ describe("GET /api/v1/attendants/availability", () => {
     vi.mocked(createAdminClient).mockReturnValue(
       fazerAdmin(EQUIPE) as unknown as ReturnType<typeof createAdminClient>,
     );
+    vi.mocked(getTenantDataClient).mockImplementation(async (_orgId, admin) => admin);
 
     const body = (await (await chamar()).json()) as {
       data: Array<{ user_id: string; current_load: number; capacity: number | null }>;
@@ -220,6 +225,7 @@ describe("GET /api/v1/attendants/availability", () => {
     vi.mocked(createAdminClient).mockReturnValue(
       admin as unknown as ReturnType<typeof createAdminClient>,
     );
+    vi.mocked(getTenantDataClient).mockImplementation(async (_orgId, dataPlane) => dataPlane);
     const res = await chamar();
     expect(res.status).toBe(403);
   });
@@ -227,13 +233,12 @@ describe("GET /api/v1/attendants/availability", () => {
   it("sem service role em dev, degrada em vez de estourar", async () => {
     sessao("agent");
     vi.mocked(isServiceRoleConfigured).mockReturnValueOnce(false);
-    const { createClient } = await import("@/lib/supabase/server");
-    vi.mocked(createClient).mockResolvedValue(
-      fazerAdmin({
-        attendant_availability: EQUIPE.attendant_availability,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      }) as any,
-    );
+    const admin = fazerAdmin({
+      attendant_availability: EQUIPE.attendant_availability,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+    vi.mocked(createAdminClient).mockReturnValue(admin);
+    vi.mocked(getTenantDataClient).mockImplementation(async (_orgId, dataPlane) => dataPlane);
 
     const res = await chamar();
     expect(res.status).toBe(200);
@@ -242,3 +247,4 @@ describe("GET /api/v1/attendants/availability", () => {
     expect(body.data[0]?.name).toBeNull();
   });
 });
+
