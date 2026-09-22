@@ -76,6 +76,7 @@ import {
   type ResultadoDaVarredura,
 } from "@/lib/lgpd/cascata";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -319,6 +320,23 @@ export function houveEfeito(resultado: ResultadoDaRetencao): boolean {
   );
 }
 
+function acumularRetencao(total: ResultadoDaRetencao | null, parte: ResultadoDaRetencao): ResultadoDaRetencao {
+  if (!total) return { ...parte, avisos: [...parte.avisos] };
+  for (const chave of [
+    "jobs_apagados", "auditoria_apagada", "lotes_fila", "lotes_auditoria", "nonces_apagados",
+    "espelho_apagado", "lotes_espelho", "conversa_do_caso_apagada", "lotes_conversa_do_caso",
+    "passagens_apagadas", "lotes_passagens", "avisos_de_caso_apagados", "lotes_avisos_de_caso",
+  ] as const) total[chave] += parte[chave];
+  total.fila_tem_resto ||= parte.fila_tem_resto;
+  total.auditoria_tem_resto ||= parte.auditoria_tem_resto;
+  total.espelho_tem_resto ||= parte.espelho_tem_resto;
+  total.conversa_do_caso_tem_resto ||= parte.conversa_do_caso_tem_resto;
+  total.passagens_tem_resto ||= parte.passagens_tem_resto;
+  total.avisos_de_caso_tem_resto ||= parte.avisos_de_caso_tem_resto;
+  total.avisos.push(...parte.avisos);
+  return total;
+}
+
 async function handle(req: NextRequest): Promise<Response> {
   const requestId = randomUUID();
 
@@ -326,32 +344,68 @@ async function handle(req: NextRequest): Promise<Response> {
     return fail("forbidden", "Cron secret missing or invalid.", 403, { requestId });
   }
 
-  let resultado: ResultadoDaRetencao;
-  let varredura: ResultadoDaVarredura = {
+  let resultado: ResultadoDaRetencao | null = null;
+  const varredura: ResultadoDaVarredura = {
     examinados: 0,
     comResiduo: 0,
     completados: [],
     temResto: false,
     falhas: [],
   };
+  let orgsWithError = 0;
+  let organizationCount = 0;
   try {
-    const admin = createAdminClient();
-    // As duas funções são novas e não estão em `lib/database.types.ts` (gerado a
-    // partir de um projeto Supabase vivo) — mesmo tratamento que
-    // `recover-stuck-messages` dá a `emit_event`.
-    const db: PodaDb = {
-      async rpc(nome, args) {
-        const { data, error } = await admin.rpc(nome as never, args as never);
-        return { data: typeof data === "number" ? data : null, error };
-      },
-    };
-    resultado = await podarHistorico(db, {
-      JOB_QUEUE_RETENTION_DAYS: env.JOB_QUEUE_RETENTION_DAYS,
-      AUDIT_LOG_RETENTION_DAYS: env.AUDIT_LOG_RETENTION_DAYS,
-      CASE_CHAT_RETENTION_DAYS: env.CASE_CHAT_RETENTION_DAYS,
-      PASSAGEM_RETENTION_DAYS: env.PASSAGEM_RETENTION_DAYS,
-      CASE_ALERT_RETENTION_DAYS: env.CASE_ALERT_RETENTION_DAYS,
-    });
+    const controlPlane = createAdminClient();
+    const { data: organizations, error: organizationsError } = await controlPlane.from("organizations").select("id").limit(50);
+    if (organizationsError) throw organizationsError;
+    organizationCount = organizations?.length ?? 0;
+    for (const organization of organizations ?? []) {
+      const organizationId = organization.id as string;
+      try {
+        const tenant = await getTenantDataClient(organizationId, controlPlane);
+        const db: PodaDb = {
+          async rpc(nome, args) {
+            const { data, error } = await tenant.rpc(nome as never, args as never);
+            return { data: typeof data === "number" ? data : null, error };
+          },
+        };
+        const parte = await podarHistorico(db, {
+          JOB_QUEUE_RETENTION_DAYS: env.JOB_QUEUE_RETENTION_DAYS,
+          AUDIT_LOG_RETENTION_DAYS: env.AUDIT_LOG_RETENTION_DAYS,
+          CASE_CHAT_RETENTION_DAYS: env.CASE_CHAT_RETENTION_DAYS,
+          PASSAGEM_RETENTION_DAYS: env.PASSAGEM_RETENTION_DAYS,
+          CASE_ALERT_RETENTION_DAYS: env.CASE_ALERT_RETENTION_DAYS,
+        });
+        resultado = acumularRetencao(resultado, parte);
+
+        try {
+          const parteVarredura = await varrerRedacoesIncompletas(tenant as unknown as ClienteDaCascata);
+          varredura.examinados += parteVarredura.examinados;
+          varredura.completados.push(...parteVarredura.completados);
+          varredura.comResiduo += parteVarredura.comResiduo;
+          varredura.temResto ||= parteVarredura.temResto;
+          varredura.falhas.push(...parteVarredura.falhas);
+        } catch (err) {
+          varredura.falhas.push(`${organizationId}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } catch (err) {
+        orgsWithError++;
+        varredura.falhas.push(`${organizationId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (!resultado) {
+      resultado = {
+        jobs_apagados: 0, auditoria_apagada: 0, lotes_fila: 0, lotes_auditoria: 0,
+        fila_tem_resto: false, auditoria_tem_resto: false, nonces_apagados: 0,
+        espelho_apagado: 0, lotes_espelho: 0, espelho_tem_resto: false,
+        conversa_do_caso_apagada: 0, lotes_conversa_do_caso: 0, conversa_do_caso_tem_resto: false,
+        passagens_apagadas: 0, lotes_passagens: 0, passagens_tem_resto: false,
+        avisos_de_caso_apagados: 0, lotes_avisos_de_caso: 0, avisos_de_caso_tem_resto: false,
+        retencao_fila_dias: 0, retencao_auditoria_dias: 0, retencao_espelho_dias: 0,
+        retencao_conversa_do_caso_dias: 0, retencao_passagem_dias: 0, retencao_aviso_de_caso_dias: 0,
+        avisos: [],
+      };
+    }
     // ── A cascata de anonimização que ficou pela metade ──────────────────
     //
     // Mora AQUI, e não numa rota de cron própria, por uma razão de packaging: o
@@ -370,11 +424,6 @@ async function handle(req: NextRequest): Promise<Response> {
     // relatório da PODA junto, e o cron passaria a auditar `falhou: true` num
     // dia em que o expurgo funcionou. As duas tarefas dividem o relógio, não o
     // desfecho — quem falha aqui falha aqui, e a falha é dita, não engolida.
-    try {
-      varredura = await varrerRedacoesIncompletas(admin as unknown as ClienteDaCascata);
-    } catch (err) {
-      varredura.falhas.push(err instanceof Error ? err.message : String(err));
-    }
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     logger.error("[data-retention] poda falhou", { error: detail, requestId });
@@ -392,6 +441,19 @@ async function handle(req: NextRequest): Promise<Response> {
       requestId,
     });
     return fail("internal_error", "Failed to prune history.", 500, { requestId });
+  }
+
+  if (varredura.falhas.length > 0) {
+    void audit({
+      action: "retention.sweep_run",
+      organizationId: null,
+      bypassedRls: true,
+      metadata: { falhou: true, orgs_com_erro: orgsWithError, erros: varredura.falhas.length },
+      requestId,
+    });
+  }
+  if (orgsWithError > 0 && orgsWithError === organizationCount) {
+    return fail("internal_error", "Failed to prune history for all organizations.", 500, { requestId });
   }
 
   for (const aviso of resultado.avisos) {
@@ -460,3 +522,4 @@ export async function GET(req: NextRequest): Promise<Response> {
 export async function POST(req: NextRequest): Promise<Response> {
   return handle(req);
 }
+
