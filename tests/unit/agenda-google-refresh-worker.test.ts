@@ -21,6 +21,9 @@ vi.mock("@/lib/webhooks/secrets", () => ({
   encryptWebhookSecret: vi.fn(async () => "\\xNOVO"),
   decryptWebhookSecret: vi.fn(async () => "1//refresh-guardado"),
 }));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({
+  getTenantDataClient: vi.fn(async (_organizationId: string, controlPlane: unknown) => controlPlane),
+}));
 
 // ⚠️ `import` é IÇADO: atribuir `process.env` no corpo do arquivo acontece
 // DEPOIS de `@/lib/env` já ter lido o ambiente. O worker então enxergava a
@@ -50,6 +53,16 @@ let vinculos: Record<string, unknown>[] = [{ organization_id: "org-1", user_id: 
 function admin() {
   return {
     from: (tabela: string) => {
+      if (tabela === "organizations") {
+        const c: Record<string, unknown> = {
+          select: () => c,
+          limit: async () => ({
+            data: [...new Set(linhas.map((linha) => linha.organization_id ?? "org-1"))].map((id) => ({ id })),
+            error: null,
+          }),
+        };
+        return c;
+      }
       // `user_organizations` responde quem ainda é membro ATIVO — é o filtro que
       // impede a agenda de um ex-funcionário de continuar sendo lida.
       if (tabela === "user_organizations") {
@@ -62,6 +75,7 @@ function admin() {
       }
       const consulta = {
         select: () => consulta,
+        eq: () => consulta,
         in: () => consulta,
         not: () => consulta,
         lte: () => consulta,
@@ -300,3 +314,4 @@ describe("renovarAgendasDoGoogle", () => {
     expect(workerEscreve).toBe(true);
   });
 });
+
