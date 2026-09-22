@@ -33,8 +33,8 @@ describe("data-plane identity mirror", () => {
       controlPlane,
     })).resolves.toEqual({ synced: 2 });
     expect(query).toHaveBeenCalledTimes(2);
-    expect(query.mock.calls[0][0]).toContain("raw_user_meta_data");
-    expect(query.mock.calls[0][0]).not.toMatch(/password|refresh_token|encrypted/i);
+    expect(query.mock.calls[0]?.[0]).toContain("raw_user_meta_data");
+    expect(query.mock.calls[0]?.[0]).not.toMatch(/password|refresh_token|encrypted/i);
   });
 });
 
