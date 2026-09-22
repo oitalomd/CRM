@@ -30,6 +30,7 @@ import { logger } from "@/lib/logger";
 import { findContactByExternalId, findLgpdRequest } from "@/lib/lgpd/repository";
 import { cascadeRedactContact } from "@/lib/lgpd/redact-cascade";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 const MAX_ATTEMPTS = 3;
 const TENANT_BATCH_SIZE = 100;
@@ -91,7 +92,7 @@ export async function processLgpdRedact(event: EventRow): Promise<HandlerResult>
     };
   }
 
-  const admin = createAdminClient();
+  const admin = await getTenantDataClient(orgId, createAdminClient());
 
   // 1. Load request row (programmatic org filter).
   const req = await findLgpdRequest(orgId, requestId).catch((err: unknown) => {
@@ -178,7 +179,7 @@ export async function processLgpdRedact(event: EventRow): Promise<HandlerResult>
       let contactId = req.contact_id;
 
       if (!contactId && req.external_customer_id) {
-        const found = await findContactByExternalId(orgId, req.external_customer_id, null);
+        const found = await findContactByExternalId(orgId, req.external_customer_id, null, admin);
         contactId = found?.id ?? null;
       }
 
@@ -214,6 +215,7 @@ export async function processLgpdRedact(event: EventRow): Promise<HandlerResult>
         organizationId: orgId,
         contactId,
         requestId,
+        admin,
       });
 
       if (cascade.alreadyAnonymized) {
@@ -518,3 +520,4 @@ export async function processLgpdRedact(event: EventRow): Promise<HandlerResult>
     };
   }
 }
+
