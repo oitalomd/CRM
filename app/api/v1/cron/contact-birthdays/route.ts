@@ -39,6 +39,7 @@ import { audit } from "@/lib/audit";
 import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -90,29 +91,16 @@ async function handle(req: NextRequest): Promise<Response> {
   const admin = createAdminClient();
   const agora = new Date();
 
-  const { data: regras, error: erroRegras } = await admin
-    .from("automation_rules")
-    .select("organization_id")
-    .eq("trigger_event", "contact.birthday")
-    .eq("is_active", true);
-
-  if (erroRegras) {
-    logger.error("[contact-birthdays] consulta de regras falhou", {
-      error: erroRegras.message,
+  const { data: organizations, error: organizationsError } = await admin
+    .from("organizations")
+    .select("id, timezone");
+  if (organizationsError) {
+    logger.error("[contact-birthdays] falha ao listar organizações", {
+      error: organizationsError.message,
       requestId,
     });
-    return fail("internal_error", "Falha ao buscar regras.", 500, { requestId });
+    return fail("internal_error", "Falha ao buscar organizações.", 500, { requestId });
   }
-
-  const orgsComRegra = [...new Set((regras ?? []).map((r) => r.organization_id as string))];
-  if (orgsComRegra.length === 0) {
-    return ok({ organizacoes: 0, examinados: 0, emitidos: 0, pulados: {} }, { requestId });
-  }
-
-  const { data: organizacoes } = await admin
-    .from("organizations")
-    .select("id, timezone")
-    .in("id", orgsComRegra.slice(0, TAMANHO_DO_LOTE));
 
   let emitidos = 0;
   let examinados = 0;
@@ -121,9 +109,42 @@ async function handle(req: NextRequest): Promise<Response> {
     pulados[motivo] = (pulados[motivo] ?? 0) + 1;
   };
 
-  for (const organizacao of organizacoes ?? []) {
+  let organizacoesComRegra = 0;
+  for (const organizacao of organizations ?? []) {
     const org = organizacao.id as string;
     const fuso = (organizacao.timezone as string | null) ?? FUSO_PADRAO;
+
+    let dataClient: ReturnType<typeof createAdminClient>;
+    try {
+      dataClient = await getTenantDataClient(org, admin);
+    } catch (err) {
+      logger.warn("[contact-birthdays] data plane indisponível; organização ignorada", {
+        organizationId: org,
+        error: err instanceof Error ? err.message : String(err),
+        requestId,
+      });
+      pular("data_plane_indisponivel");
+      continue;
+    }
+
+    const { data: regras, error: erroRegras } = await dataClient
+      .from("automation_rules")
+      .select("id")
+      .eq("organization_id", org)
+      .eq("trigger_event", "contact.birthday")
+      .eq("is_active", true)
+      .limit(1);
+    if (erroRegras) {
+      logger.error("[contact-birthdays] consulta de regras falhou", {
+        organization_id: org,
+        error: erroRegras.message,
+        requestId,
+      });
+      pular("consulta_falhou");
+      continue;
+    }
+    if (!regras?.length) continue;
+    organizacoesComRegra++;
 
     let dias: number[];
     let parede: ReturnType<typeof partesNoFuso>;
@@ -138,7 +159,7 @@ async function handle(req: NextRequest): Promise<Response> {
     }
     if (dias.length === 0) continue;
 
-    const { data: contatos, error } = await admin
+    const { data: contatos, error } = await dataClient
       .from("contacts")
       .select("id")
       .eq("organization_id", org)
@@ -169,7 +190,7 @@ async function handle(req: NextRequest): Promise<Response> {
     const jaEmitidos = new Set<string>();
     for (let i = 0; i < contatos.length; i += TAMANHO_DO_LOTE) {
       const lote = contatos.slice(i, i + TAMANHO_DO_LOTE).map((c) => c.id as string);
-      const { data: anteriores } = await admin
+      const { data: anteriores } = await dataClient
         .from("event_log")
         .select("entity_id")
         .eq("organization_id", org)
@@ -188,7 +209,7 @@ async function handle(req: NextRequest): Promise<Response> {
         pular("ja_emitido_hoje");
         continue;
       }
-      const { error: erroEvento } = await admin.rpc("emit_event" as never, {
+      const { error: erroEvento } = await dataClient.rpc("emit_event" as never, {
         p_event_type: "contact.birthday",
         p_entity_kind: "contact",
         p_entity_id: id,
@@ -226,10 +247,11 @@ async function handle(req: NextRequest): Promise<Response> {
   }
 
   return ok(
-    { organizacoes: (organizacoes ?? []).length, examinados, emitidos, pulados },
+    { organizacoes: organizacoesComRegra, examinados, emitidos, pulados },
     { requestId },
   );
 }
 
 export const GET = handle;
 export const POST = handle;
+
