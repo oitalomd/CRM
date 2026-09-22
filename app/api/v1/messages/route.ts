@@ -9,6 +9,7 @@ import { resolveAuthDual } from "@/lib/api/auth-dual";
 import { ApiError } from "@/lib/api/types";
 import { fail, ok } from "@/lib/api/wrappers";
 import { sendMessageSchema, validateRequest, type SendMessageInput } from "@/lib/schemas";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 import { sendMessageHandler } from "./_handler";
 
@@ -33,7 +34,19 @@ export async function POST(req: NextRequest): Promise<Response> {
     scope: "mcp:write",
   });
   if (!authz.ok) return authz.response;
-  const { supabase, organizationId, actor, idioma } = authz;
+  const { supabase: controlPlane, organizationId, actor, idioma } = authz;
+
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(organizationId, controlPlane);
+  } catch (err) {
+    return fail(
+      "tenant_data_plane_unavailable",
+      err instanceof Error ? err.message : "Tenant data plane unavailable.",
+      503,
+      { requestId },
+    );
+  }
 
   let input;
   try {
@@ -67,3 +80,4 @@ export async function POST(req: NextRequest): Promise<Response> {
     throw err;
   }
 }
+

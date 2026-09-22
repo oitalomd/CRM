@@ -15,6 +15,7 @@
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { MODELO_DE_EMBEDDING, DIMENSOES_DO_EMBEDDING } from "@/lib/ai/embeddings/chave";
 
 export interface CreateVersionParams {
@@ -24,6 +25,7 @@ export interface CreateVersionParams {
   /** Histórico: o agente a partir do qual a fonte nasceu (pode ser null). */
   agentId: string | null;
   sourceType: string;
+  db?: SupabaseClient;
 }
 
 export interface CreateVersionResult {
@@ -41,7 +43,7 @@ export interface CreateVersionResult {
 export async function createKnowledgeVersion(
   params: CreateVersionParams,
 ): Promise<CreateVersionResult> {
-  const admin = createAdminClient();
+  const admin = params.db ?? createAdminClient();
 
   const { data: maxRow, error: maxErr } = await admin
     .from("ai_knowledge_versions")
@@ -91,8 +93,9 @@ export async function markVersionReady(
   versionId: string,
   organizationId: string,
   chunkCount: number,
+  db?: SupabaseClient,
 ): Promise<void> {
-  const admin = createAdminClient();
+  const admin = db ?? createAdminClient();
 
   const { error } = await admin
     .from("ai_knowledge_versions")
@@ -114,8 +117,9 @@ export async function markVersionFailed(
   versionId: string,
   organizationId: string,
   errorMessage: string,
+  db?: SupabaseClient,
 ): Promise<void> {
-  const admin = createAdminClient();
+  const admin = db ?? createAdminClient();
 
   const { error } = await admin
     .from("ai_knowledge_versions")
@@ -141,8 +145,9 @@ export async function activateVersion(params: {
   organizationId: string;
   knowledgeSourceId: string;
   versionId: string;
+  db?: SupabaseClient;
 }): Promise<void> {
-  const admin = createAdminClient();
+  const admin = params.db ?? createAdminClient();
 
   // Pré-checagem de tenant: o admin client bypassa RLS, então conferir aqui é
   // obrigatório e não paranoia.
@@ -195,3 +200,4 @@ export async function activateVersion(params: {
     throw new Error(`activateVersion: ponteiro da fonte falhou — ${ptrErr.message}`);
   }
 }
+

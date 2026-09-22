@@ -4,6 +4,7 @@
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { AGENT_CONFIG_DEFAULTS, agentConfigSchema } from "@/lib/ai/guardrails-schema";
 import { byteaToBuffer, decryptKey } from "@/lib/crypto/aes_gcm";
 
@@ -36,10 +37,12 @@ export interface VoiceAgentConfig {
  * chaves cadastradas e nenhuma escolha explícita, variar sozinho no dia em que
  * alguém cadastra uma segunda é pior que sempre usar a mesma.
  */
-async function resolverChaveOpenAiDaVoz(organizationId: string): Promise<string> {
+async function resolverChaveOpenAiDaVoz(
+  organizationId: string,
+  db: SupabaseClient = createAdminClient(),
+): Promise<string> {
   try {
-    const admin = createAdminClient();
-    const { data } = await admin
+    const { data } = await db
       .from("ai_provider_credentials")
       .select("api_key_encrypted, api_key_iv, api_key_tag")
       .eq("organization_id", organizationId)
@@ -65,9 +68,11 @@ async function resolverChaveOpenAiDaVoz(organizationId: string): Promise<string>
   return process.env.OPENAI_API_KEY ?? "";
 }
 
-export async function getActiveVoiceAgent(organizationId: string): Promise<VoiceAgentConfig | null> {
-  const supabase = createAdminClient();
-  const { data, error } = await supabase
+export async function getActiveVoiceAgent(
+  organizationId: string,
+  db: SupabaseClient = createAdminClient(),
+): Promise<VoiceAgentConfig | null> {
+  const { data, error } = await db
     .from("ai_agents")
     .select("id, system_prompt, config")
     .eq("organization_id", organizationId)
@@ -92,6 +97,7 @@ export async function getActiveVoiceAgent(organizationId: string): Promise<Voice
     voiceModel: cfg.voice_model,
     ragTopK: cfg.rag_top_k,
     ragSimilarityThreshold: cfg.rag_similarity_threshold,
-    apiKey: await resolverChaveOpenAiDaVoz(organizationId),
+    apiKey: await resolverChaveOpenAiDaVoz(organizationId, db),
   };
 }
+

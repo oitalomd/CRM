@@ -15,7 +15,7 @@ import { requireRole } from "@/lib/auth/require-role";
 import { mencaoAtingeUsuario, tokensDeMencao } from "@/lib/notifications/mentions";
 import { createNoteSchema } from "@/lib/schemas/notes";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { traduzir } from "@/lib/i18n/dicionario";
 
 export const dynamic = "force-dynamic";
@@ -33,7 +33,12 @@ export async function GET(_req: NextRequest, { params }: RouteParams): Promise<R
   const { org } = authz;
   const { id } = await params;
 
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(org.orgId, createAdminClient());
+  } catch (err) {
+    return fail("tenant_data_plane_unavailable", err instanceof Error ? err.message : "Tenant data plane unavailable.", 503, { requestId });
+  }
   const { data: conversation } = await supabase
     .from("conversations")
     .select("id")
@@ -63,7 +68,12 @@ export async function POST(req: NextRequest, { params }: RouteParams): Promise<R
   const { user, org } = authz;
   const { id } = await params;
 
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(org.orgId, createAdminClient());
+  } catch (err) {
+    return fail("tenant_data_plane_unavailable", err instanceof Error ? err.message : "Tenant data plane unavailable.", 503, { requestId });
+  }
   const { data: conversation } = await supabase
     .from("conversations")
     .select("id")
@@ -151,3 +161,4 @@ async function emitirMencoesDaNota(input: {
     }),
   );
 }
+

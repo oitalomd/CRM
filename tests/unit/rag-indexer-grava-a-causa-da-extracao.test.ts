@@ -27,6 +27,9 @@ import { extrairTextoDoArquivo } from "@/lib/ai/rag/ingest/documento";
  */
 
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({
+  getTenantDataClient: vi.fn(async (_organizationId: string, admin: unknown) => admin),
+}));
 vi.mock("@/lib/ai/embed", () => ({
   embedText: vi.fn(),
   SemChaveDeEmbeddingError: class SemChaveDeEmbeddingError extends Error {},
@@ -137,3 +140,4 @@ describe("rag-indexer — falha de extração guarda a causa", () => {
     expect(String(avisos[0]!["body"])).toContain("Object not found: org-1/tabela.pdf");
   });
 });
+

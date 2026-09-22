@@ -43,11 +43,14 @@ import { traduzir } from "@/lib/i18n/dicionario";
 import type { Idioma } from "@/lib/i18n/idiomas";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
 interface Contexto {
   orgId: string;
+  db: SupabaseClient;
   sessionId: string;
   sessionRef: string;
   provider: ChannelProvider;
@@ -69,8 +72,8 @@ async function contexto(
   const org = await resolveActiveOrg(user);
   if (!org) return { ok: false, res: fail("forbidden", t("Sem organização ativa."), 403, { requestId }) };
 
-  const admin = createAdminClient();
-  const sessao = await findPartnerSession(admin, org.orgId);
+  const db = await getTenantDataClient(org.orgId, createAdminClient());
+  const sessao = await findPartnerSession(db, org.orgId);
   if (!sessao || sessao.archivedAt) {
     return {
       ok: false,
@@ -78,7 +81,7 @@ async function contexto(
     };
   }
 
-  const { data: linha } = await admin
+  const { data: linha } = await db
     .from("channel_sessions")
     // As COLUNAS do ref vêm do seam. Escrevê-las à mão aqui nomeia os providers
     // — e o `lint:channels` reprovou a primeira versão deste arquivo por isso,
@@ -98,7 +101,7 @@ async function contexto(
 
   return {
     ok: true,
-    ctx: { orgId: org.orgId, sessionId: sessao.id, sessionRef, provider, idioma: user.idioma },
+    ctx: { orgId: org.orgId, db, sessionId: sessao.id, sessionRef, provider, idioma: user.idioma },
   };
 }
 
@@ -108,8 +111,7 @@ export async function GET(): Promise<Response> {
   const r = await contexto(requestId);
   if (!r.ok) return r.res;
 
-  const admin = createAdminClient();
-  const { data, error } = await admin
+  const { data, error } = await r.ctx.db
     .from("meta_templates")
     .select("name, language, status, category, rejected_reason, components, synced_at")
     .eq("organization_id", r.ctx.orgId)
@@ -175,6 +177,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       // duplicamos a regra: regra copiada envelhece separado da fonte.
       await adapter.templates.create({
         organizationId: r.ctx.orgId,
+        dataClient: r.ctx.db,
         sessionRef: r.ctx.sessionRef,
         draft: {
           name: corpo.name,
@@ -198,14 +201,14 @@ export async function POST(req: NextRequest): Promise<Response> {
     // isso ele criaria a mesma de novo, achando que não salvou.
     const remotas = await adapter.templates.list({
       organizationId: r.ctx.orgId,
+      dataClient: r.ctx.db,
       sessionRef: r.ctx.sessionRef,
     });
-    const admin = createAdminClient();
     const agora = new Date().toISOString();
 
     let gravadas = 0;
     for (const t of remotas) {
-      const { error } = await admin.from("meta_templates").upsert(
+      const { error } = await r.ctx.db.from("meta_templates").upsert(
         {
           organization_id: r.ctx.orgId,
           channel_session_id: r.ctx.sessionId,
@@ -243,3 +246,4 @@ export async function POST(req: NextRequest): Promise<Response> {
     return fail("upstream_error", msg, 502, { requestId });
   }
 }
+

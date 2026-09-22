@@ -16,7 +16,7 @@ import { randomUUID } from "node:crypto";
 import { type NextRequest } from "next/server";
 
 import { fail, ok } from "@/lib/api/wrappers";
-import { loadAuthUser } from "@/lib/auth/server";
+import { loadAuthUser, resolveActiveOrg } from "@/lib/auth/server";
 import { traduzir } from "@/lib/i18n/dicionario";
 import {
   roteiaProximasAcoes,
@@ -26,6 +26,7 @@ import {
 import type { LeadCandidate } from "@/lib/leads/active-lead";
 import { anexarDadosDoContato, type LinhaDoContatoNoQuadro } from "@/lib/kanban/dados-do-contato";
 import { createClient } from "@/lib/supabase/server";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import type { BoardData, Pipeline, Stage } from "@/lib/kanban/types";
 import type { Lead } from "@/lib/types/leads";
 
@@ -424,15 +425,25 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
   const requestId = randomUUID();
   const { id: pipelineId } = await ctx.params;
 
-  const supabase = await createClient();
+  const shared = await createClient();
   const {
     data: { user },
     error: authErr,
-  } = await supabase.auth.getUser();
+  } = await shared.auth.getUser();
   if (authErr || !user) {
     return fail("unauthenticated", "Auth required.", 401, { requestId });
   }
   const authUser = await loadAuthUser();
+  const activeOrg = authUser ? await resolveActiveOrg(authUser) : null;
+  if (!activeOrg) return fail("forbidden_tenant", "Sem organização ativa.", 403, { requestId });
+  let supabase: Awaited<ReturnType<typeof createClient>>;
+  try {
+    supabase = await getTenantDataClient(activeOrg.orgId, shared);
+  } catch {
+    return fail("data_plane_unavailable", "O banco da organização está indisponível.", 503, {
+      requestId,
+    });
+  }
   const t = (texto: string) => traduzir(texto, authUser?.idioma ?? "pt-BR");
 
   const [
@@ -521,3 +532,4 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
 
   return ok(board, { requestId });
 }
+

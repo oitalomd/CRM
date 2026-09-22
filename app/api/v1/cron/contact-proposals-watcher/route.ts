@@ -27,6 +27,7 @@ import { vencePropostasDeDado } from "@/lib/contacts/proposta-de-dado";
 import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -46,30 +47,39 @@ async function handle(req: NextRequest): Promise<Response> {
   const admin = createAdminClient();
   const agora = new Date();
 
-  // Só quem TEM proposta vencida. Varrer todas as organizações a cada hora para
-  // não achar nada é custo sem informação.
-  const { data: rows, error } = await admin
-    .from("contact_field_proposals")
-    .select("organization_id")
-    .eq("status", "pending")
-    .lt("expires_at", agora.toISOString());
-
-  if (error) {
-    logger.error("[contact-proposals-watcher] query falhou", { error: error.message, requestId });
+  const { data: organizations, error: organizationsError } = await admin
+    .from("organizations")
+    .select("id")
+    .limit(ORG_LIMIT);
+  if (organizationsError) {
+    logger.error("[contact-proposals-watcher] falha ao listar organizações", {
+      error: organizationsError.message,
+      requestId,
+    });
     return fail("internal_error", "Failed to list organizations.", 500, { requestId });
   }
-
-  const orgs = [
-    ...new Set(((rows ?? []) as Array<{ organization_id: string }>).map((r) => r.organization_id)),
-  ].slice(0, ORG_LIMIT);
 
   let vencidas = 0;
   let itens = 0;
   const comErro: string[] = [];
 
-  for (const org of orgs) {
+  for (const organization of organizations ?? []) {
+    const org = organization.id as string;
     try {
-      const r = await vencePropostasDeDado(admin, org, agora);
+      const dataClient = await getTenantDataClient(org, admin);
+      // Só quem TEM proposta vencida é processado. A descoberta e o vencimento
+      // ficam no mesmo tenant; nenhum dado de uma organização atravessa o loop.
+      const { data: pending, error: pendingError } = await dataClient
+        .from("contact_field_proposals")
+        .select("id")
+        .eq("organization_id", org)
+        .eq("status", "pending")
+        .lt("expires_at", agora.toISOString())
+        .limit(1);
+      if (pendingError) throw pendingError;
+      if (!pending?.length) continue;
+
+      const r = await vencePropostasDeDado(dataClient, org, agora);
       vencidas += r.vencidas;
       itens += r.itensDeCaixa;
     } catch (e) {
@@ -87,7 +97,7 @@ async function handle(req: NextRequest): Promise<Response> {
 
   return ok(
     {
-      organizations: orgs.length,
+      organizations: (organizations ?? []).length,
       proposals_expired: vencidas,
       inbox_items: itens,
       orgs_with_error: comErro.length,
@@ -103,3 +113,4 @@ export async function GET(req: NextRequest): Promise<Response> {
 export async function POST(req: NextRequest): Promise<Response> {
   return handle(req);
 }
+

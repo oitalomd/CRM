@@ -6,6 +6,7 @@
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { perfilDaOrganizacao } from "@/lib/legal/perfil-do-pais";
 import { computeDueAt } from "./sla";
 import type { LgpdRequest, LgpdRequestType, LgpdScope } from "./types";
@@ -76,9 +77,8 @@ export async function createLgpdRequest(
 export async function findLgpdRequest(
   organizationId: string,
   id: string,
+  admin: SupabaseClient = createAdminClient(),
 ): Promise<LgpdRequest | null> {
-  const admin = createAdminClient();
-
   const { data, error } = await admin
     .from("lgpd_requests")
     .select("*")
@@ -111,9 +111,8 @@ export async function findContactByExternalId(
   organizationId: string,
   externalCustomerId: string,
   fallbackEmail?: string | null,
+  admin: SupabaseClient = createAdminClient(),
 ): Promise<{ id: string } | null> {
-  const admin = createAdminClient();
-
   // Primary: match by Nuvemshop customer ID stored in source_metadata
   const { data: bySourceMeta, error: err1 } = await admin
     .from("contacts")
@@ -152,3 +151,4 @@ export async function findContactByExternalId(
 
   return null;
 }
+

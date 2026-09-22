@@ -18,6 +18,7 @@ import { orgTemAutomatico } from "@/lib/ai/agents/org-tem-automatico";
 import { comandosDaFila } from "@/lib/inbox/comando-da-conversa";
 import { aplicarMarcador } from "@/lib/inbox/marcador-da-conversa";
 import { createClient } from "@/lib/supabase/server";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -69,12 +70,12 @@ export function contagemSoNaoLidas(sp: URLSearchParams): boolean {
 
 export async function GET(req: NextRequest): Promise<Response> {
   const requestId = randomUUID();
-  const supabase = await createClient();
+  const controlPlane = await createClient();
 
   const {
     data: { user },
     error: authErr,
-  } = await supabase.auth.getUser();
+  } = await controlPlane.auth.getUser();
   if (authErr || !user) {
     return fail("unauthenticated", "Auth required.", 401, { requestId });
   }
@@ -86,6 +87,18 @@ export async function GET(req: NextRequest): Promise<Response> {
       "no_active_org",
       traduzir("No active organization.", authUser?.idioma ?? "pt-BR"),
       403,
+      { requestId },
+    );
+  }
+
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(activeOrg.orgId, controlPlane);
+  } catch (err) {
+    return fail(
+      "tenant_data_plane_unavailable",
+      err instanceof Error ? err.message : "Tenant data plane unavailable.",
+      503,
       { requestId },
     );
   }
@@ -182,3 +195,4 @@ export async function GET(req: NextRequest): Promise<Response> {
     { requestId },
   );
 }
+

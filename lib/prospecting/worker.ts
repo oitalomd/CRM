@@ -335,9 +335,16 @@ export async function sendNextCandidate(
   }
 }
 
-export async function tickProspecting(pool: pg.Pool, admin: SupabaseClient) {
+export async function tickProspecting(
+  pool: pg.Pool,
+  admin: SupabaseClient,
+  options: { organizationId?: string } = {},
+) {
+  const params = options.organizationId ? [options.organizationId] : [];
+  const filter = options.organizationId ? " and organization_id=$1" : "";
   const { rows: organizations } = await pool.query<{ organization_id: string }>(
-    "select organization_id from prospecting_campaigns where status='running' or search_status in ('starting','running') group by organization_id order by min(updated_at) limit 20",
+    `select organization_id from prospecting_campaigns where (status='running' or search_status in ('starting','running'))${filter} group by organization_id order by min(updated_at) limit 20`,
+    params,
   );
   const deadline = Date.now() + 180000;
   let processed = 0;
@@ -442,3 +449,4 @@ export async function tickProspecting(pool: pg.Pool, admin: SupabaseClient) {
   }
   return { processed };
 }
+

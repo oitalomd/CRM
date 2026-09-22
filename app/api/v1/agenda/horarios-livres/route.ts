@@ -44,7 +44,8 @@ import {
 } from "@/lib/agenda/consulta";
 import { fail, ok } from "@/lib/api/wrappers";
 import { requireRole } from "@/lib/auth/require-role";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { traduzir } from "@/lib/i18n/dicionario";
 
 const querySchema = z.object({
@@ -89,7 +90,17 @@ export async function GET(req: NextRequest): Promise<Response> {
     });
   }
 
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(activeOrg.orgId, createAdminClient());
+  } catch (err) {
+    return fail(
+      "tenant_data_plane_unavailable",
+      err instanceof Error ? err.message : "Tenant data plane unavailable.",
+      503,
+      { requestId },
+    );
+  }
 
   // O miolo mora em `lib/agenda/consulta.ts` porque as ferramentas MCP precisam
   // do MESMO cálculo sem ter request nem cookie. Duas coletas dariam à IA e à

@@ -6,7 +6,8 @@ import { juntarEnderecos, normalizarEndereco, TETO_DE_ENDERECO } from "@/lib/age
 import { fail, ok } from "@/lib/api/wrappers";
 import { audit } from "@/lib/audit";
 import { requireRole } from "@/lib/auth/require-role";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 const busca = z.object({ q: z.string().max(100).optional() });
 const corpo = z.object({
@@ -25,7 +26,17 @@ export async function GET(req: Request) {
   const input = busca.safeParse(Object.fromEntries(new URL(req.url).searchParams));
   if (!input.success) return fail("validation_failed", "Confira a busca.", 422, { requestId });
 
-  const db = await createClient();
+  let db;
+  try {
+    db = await getTenantDataClient(auth.org.orgId, createAdminClient());
+  } catch (err) {
+    return fail(
+      "tenant_data_plane_unavailable",
+      err instanceof Error ? err.message : "Tenant data plane unavailable.",
+      503,
+      { requestId },
+    );
+  }
   const org = auth.org.orgId;
   const like = ilike(input.data.q);
 
@@ -77,7 +88,17 @@ export async function POST(req: Request) {
   if (!parsed.success) return fail("validation_failed", "Confira o endereço.", 422, { requestId });
 
   const address = normalizarEndereco(parsed.data.address);
-  const db = await createClient();
+  let db;
+  try {
+    db = await getTenantDataClient(auth.org.orgId, createAdminClient());
+  } catch (err) {
+    return fail(
+      "tenant_data_plane_unavailable",
+      err instanceof Error ? err.message : "Tenant data plane unavailable.",
+      503,
+      { requestId },
+    );
+  }
   const { data, error } = await db
     .from("calendar_locations")
     .insert({
@@ -105,3 +126,4 @@ export async function POST(req: Request) {
   });
   return ok({ address: data?.address ?? address, already_saved: false }, { status: 201, requestId });
 }
+

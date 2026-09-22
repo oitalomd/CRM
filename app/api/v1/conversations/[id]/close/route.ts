@@ -12,7 +12,7 @@ import { audit } from "@/lib/audit";
 import { ok, fail } from "@/lib/api/wrappers";
 import { requireRole } from "@/lib/auth/require-role";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import type { Conversation } from "@/lib/types/messaging";
 import { traduzir } from "@/lib/i18n/dicionario";
 
@@ -33,20 +33,25 @@ export async function POST(req: NextRequest, ctx: RouteCtx): Promise<Response> {
   const parsed = z.object({ expected_revision: z.number().int().positive().optional() }).safeParse(body);
   if (!parsed.success) return fail("validation_failed", "Revisão inválida.", 422, { requestId });
   const { id } = await ctx.params;
-  const supabase = await createClient();
-
   // spec 13 §4: escrita é agent+ (viewer é read-only).
   const authz = await requireRole("agent", { requestId, resource: "conversations" });
   if (!authz.ok) return authz.response;
   const t = (texto: string) => traduzir(texto, authz.user.idioma);
   const user = authz.user;
 
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(authz.org.orgId, createAdminClient());
+  } catch (err) {
+    return fail("tenant_data_plane_unavailable", err instanceof Error ? err.message : "Tenant data plane unavailable.", 503, { requestId });
+  }
+
   const { data: visible, error: readError } = await supabase.from("conversations")
     .select("id, organization_id, service_revision").eq("id", id)
     .eq("organization_id", authz.org.orgId).maybeSingle();
   if (readError) return fail("internal_error", readError.message, 500, { requestId });
   if (!visible) return fail("not_found", t("Conversa não encontrada."), 404, { requestId });
-  const { data, error } = await createAdminClient().rpc("fn_service_status", {
+  const { data, error } = await supabase.rpc("fn_service_status", {
     p_org: visible.organization_id, p_conversation: id, p_status: "closed",
     p_expected: parsed.data.expected_revision ?? visible.service_revision,
   });
@@ -66,3 +71,4 @@ export async function POST(req: NextRequest, ctx: RouteCtx): Promise<Response> {
 
   return ok(conv, { requestId });
 }
+

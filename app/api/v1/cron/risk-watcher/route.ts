@@ -40,6 +40,7 @@ import { logger } from "@/lib/logger";
 import { venceReativacoes } from "@/lib/leads/reactivation";
 import { observaTravessias } from "@/lib/leads/risk-worker";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -58,18 +59,19 @@ async function handle(req: NextRequest): Promise<Response> {
 
   const admin = createAdminClient();
 
-  const { data: rows, error } = await admin
-    .from("crm_leads")
-    .select("organization_id")
-    .eq("status", "open");
-  if (error) {
-    logger.error("[risk-watcher] query failed", { error: error.message, requestId });
+  const { data: organizations, error: organizationsError } = await admin
+    .from("organizations")
+    .select("id")
+    .limit(ORG_LIMIT);
+  if (organizationsError) {
+    logger.error("[risk-watcher] failed to list organizations", {
+      error: organizationsError.message,
+      requestId,
+    });
     return fail("internal_error", "Failed to list organizations.", 500, { requestId });
   }
 
-  const orgs = [
-    ...new Set(((rows ?? []) as Array<{ organization_id: string }>).map((r) => r.organization_id)),
-  ].slice(0, ORG_LIMIT);
+  const orgs = (organizations ?? []).map((organization) => organization.id as string);
 
   let travessias = 0;
   let esfriaram = 0;
@@ -86,7 +88,21 @@ async function handle(req: NextRequest): Promise<Response> {
 
   for (const org of orgs) {
     try {
-      const r = await observaTravessias(admin, org);
+      const dataClient = await getTenantDataClient(org, admin);
+      // Mantém a semântica anterior: organizações sem negócio aberto não
+      // entram na varredura, mas a descoberta do tenant continua no control
+      // plane. A consulta e todo o processamento de risco permanecem no data
+      // plane dedicado.
+      const { data: leadAberto, error: leadError } = await dataClient
+        .from("crm_leads")
+        .select("id")
+        .eq("organization_id", org)
+        .eq("status", "open")
+        .limit(1);
+      if (leadError) throw new Error(`listar leads abertos: ${leadError.message}`);
+      if (!leadAberto?.length) continue;
+
+      const r = await observaTravessias(dataClient, org);
       travessias += r.travessias;
       esfriaram += r.esfriaram;
       reativaram += r.reativaram;
@@ -97,7 +113,7 @@ async function handle(req: NextRequest): Promise<Response> {
       // O VENCIMENTO RODA NO MESMO TICK, depois da travessia. Se morasse num
       // cron separado, a proposta poderia vencer em silêncio até o outro rodar
       // — e o buraco entre os dois seria exatamente onde a demanda morre.
-      const v = await venceReativacoes(admin, org, new Date());
+      const v = await venceReativacoes(dataClient, org, new Date());
       vencidas += v.vencidas;
       falhas += v.falhasDeAtividade;
     } catch (e) {
@@ -143,3 +159,4 @@ export async function GET(req: NextRequest): Promise<Response> {
 export async function POST(req: NextRequest): Promise<Response> {
   return handle(req);
 }
+

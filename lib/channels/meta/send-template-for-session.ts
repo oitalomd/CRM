@@ -15,8 +15,6 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { createAdminClient } from "@/lib/supabase/admin";
-
 import { resolveMetaCreds } from "./credentials";
 import { sendTemplate } from "./send-template";
 
@@ -71,7 +69,7 @@ export async function sendTemplateForSession(
   // com `Bearer` vazio e viraria `failed` com um erro que não nomeia o motivo real —
   // e a mudança de elegibilidade da #674 transformaria uma fila recuperável em
   // falha. Com ela, o desfecho é `queued` com `meta_not_configured`.
-  const creds = await resolveMetaCreds(createAdminClient(), {
+  const creds = await resolveMetaCreds(db, {
     organizationId: input.organizationId,
     phoneNumberId: input.sessionRef,
   });
@@ -131,3 +129,4 @@ export async function sendTemplateForSession(
       throw new Error(`meta_${resultado.code ?? "erro"}: ${resultado.message}`);
   }
 }
+

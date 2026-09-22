@@ -53,7 +53,9 @@ import {
 } from "@/lib/ai/rag/version";
 import type { EventRow, HandlerResult } from "@/lib/event-log/dispatcher";
 import { createAdminClient } from "@/lib/supabase/admin";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { NuvemshopApiClient } from "@/lib/nuvemshop/api-client";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 const DEBOUNCE_TTL_SEC = 30;
 const LAG_WARN_MS = 5 * 60 * 1000;
@@ -94,9 +96,9 @@ type Resultado =
 async function carregarFonte(
   organizationId: string,
   sourceId: string,
+  db: SupabaseClient,
 ): Promise<FonteRow | null> {
-  const admin = createAdminClient();
-  const { data } = await admin
+  const { data } = await db
     .from("ai_knowledge_sources")
     .select("id, organization_id, agent_id, source_type, name, status, is_active, source_metadata")
     .eq("id", sourceId)
@@ -113,10 +115,10 @@ async function marcarFonte(
   organizationId: string,
   sourceId: string,
   campos: Record<string, unknown>,
+  db: SupabaseClient,
 ): Promise<void> {
   try {
-    const admin = createAdminClient();
-    await admin
+    await db
       .from("ai_knowledge_sources")
       .update(campos)
       .eq("id", sourceId)
@@ -139,10 +141,10 @@ async function avisarNaCentral(
   fonte: FonteRow,
   titulo: string,
   corpo: string,
+  db: SupabaseClient,
 ): Promise<void> {
   try {
-    const admin = createAdminClient();
-    const { data: jaAberto } = await admin
+    const { data: jaAberto } = await db
       .from("agent_inbox_items")
       .select("id")
       .eq("organization_id", organizationId)
@@ -152,7 +154,7 @@ async function avisarNaCentral(
       .maybeSingle();
     if (jaAberto) return;
 
-    await admin.from("agent_inbox_items").insert({
+    await db.from("agent_inbox_items").insert({
       organization_id: organizationId,
       kind: "conhecimento_nao_indexado",
       severity: "warn",
@@ -178,9 +180,8 @@ async function avisarNaCentral(
  * resposta inteira; `chunkText` só entra quando ela é longa demais, para uma
  * FAQ curta nunca ser picada no meio.
  */
-async function pedacosDeFaq(fonte: FonteRow): Promise<Pedaco[]> {
-  const admin = createAdminClient();
-  const { data, error } = await admin
+async function pedacosDeFaq(fonte: FonteRow, db: SupabaseClient): Promise<Pedaco[]> {
+  const { data, error } = await db
     .from("ai_faq_items")
     .select("question, answer, position")
     .eq("organization_id", fonte.organization_id)
@@ -207,7 +208,7 @@ async function pedacosDeFaq(fonte: FonteRow): Promise<Pedaco[]> {
  * nascia, e não havia caminho nenhum que transformasse aquele PDF em trecho —
  * o worker só sabia ler `ai_faq_items`.
  */
-async function pedacosDeDocumento(fonte: FonteRow): Promise<Pedaco[]> {
+async function pedacosDeDocumento(fonte: FonteRow, db: SupabaseClient): Promise<Pedaco[]> {
   const meta = (fonte.source_metadata ?? {}) as {
     blob_path?: string;
     filename?: string;
@@ -216,7 +217,7 @@ async function pedacosDeDocumento(fonte: FonteRow): Promise<Pedaco[]> {
   const blobPath = meta.blob_path;
   if (!blobPath) throw new ErroDeExtracao("a fonte não aponta para nenhum arquivo");
 
-  const { texto, extensao } = await extrairTextoDoArquivo(blobPath, meta.ext);
+  const { texto, extensao } = await extrairTextoDoArquivo(blobPath, meta.ext, db);
   return chunkText(texto, { maxChars: 1600, overlapChars: 200 }).map((c) => ({
     content: c,
     metadata: {
@@ -228,9 +229,9 @@ async function pedacosDeDocumento(fonte: FonteRow): Promise<Pedaco[]> {
 }
 
 /** Catálogo: os produtos já sincronizados desta organização. */
-async function pedacosDeCatalogo(fonte: FonteRow, productId?: string): Promise<Pedaco[]> {
+async function pedacosDeCatalogo(fonte: FonteRow, db: SupabaseClient, productId?: string): Promise<Pedaco[]> {
   const produtos = productId
-    ? [await buscarProdutoNaLoja(fonte.organization_id, productId)].filter(
+      ? [await buscarProdutoNaLoja(fonte.organization_id, productId, db)].filter(
         (p): p is NuvemshopProduct => p !== null,
       )
     : [];
@@ -250,8 +251,9 @@ async function pedacosDeCatalogo(fonte: FonteRow, productId?: string): Promise<P
 async function buscarProdutoNaLoja(
   organizationId: string,
   productId: string,
+  db: SupabaseClient,
 ): Promise<NuvemshopProduct | null> {
-  const creds = await credenciaisDaLoja(organizationId);
+  const creds = await credenciaisDaLoja(organizationId, db);
   if (!creds) {
     console.warn("[rag-indexer] loja não conectada para a org", organizationId);
     return null;
@@ -274,10 +276,9 @@ async function buscarProdutoNaLoja(
 
 async function credenciaisDaLoja(
   organizationId: string,
+  db: SupabaseClient,
 ): Promise<{ accessToken: string; storeId: string } | null> {
-  const admin = createAdminClient();
-
-  const { data, error } = await admin
+  const { data, error } = await db
     .from("tenant_integrations")
     .select("id, organization_id, provider, store_metadata")
     .eq("organization_id", organizationId)
@@ -291,7 +292,7 @@ async function credenciaisDaLoja(
   const storeId = String(meta["store_id"] ?? meta["id"] ?? "");
   if (!storeId) return null;
 
-  const { data: decrypted, error: decErr } = await admin.rpc("fn_decrypt_oauth" as never, {
+  const { data: decrypted, error: decErr } = await db.rpc("fn_decrypt_oauth" as never, {
     p_organization_id: organizationId,
     p_integration_id: (data as { id: string }).id,
   } as never);
@@ -324,7 +325,9 @@ export async function indexarFonte(
   fonte: FonteRow,
   chave: ChaveDeEmbedding,
   extra: { productId?: string },
+  db: SupabaseClient,
 ): Promise<Resultado> {
+  const scopedDb = db;
   const tipo = canonizarTipoDeFonte(fonte.source_type);
   if (tipo === null) {
     return { tipo: "erro", detalhe: `tipo_de_material_desconhecido:${fonte.source_type}` };
@@ -334,13 +337,13 @@ export async function indexarFonte(
   try {
     switch (tipo) {
       case "faq":
-        pedacos = await pedacosDeFaq(fonte);
+        pedacos = await pedacosDeFaq(fonte, scopedDb);
         break;
       case "documento":
-        pedacos = await pedacosDeDocumento(fonte);
+        pedacos = await pedacosDeDocumento(fonte, scopedDb);
         break;
       case "catalogo":
-        pedacos = await pedacosDeCatalogo(fonte, extra.productId);
+        pedacos = await pedacosDeCatalogo(fonte, scopedDb, extra.productId);
         break;
       case "conversas":
         // A ingestão anonimizada tem pipeline próprio (cron
@@ -376,13 +379,13 @@ export async function indexarFonte(
     knowledgeSourceId: fonte.id,
     agentId: fonte.agent_id,
     sourceType: tipo,
+    db,
   });
 
   console.warn(
     `[rag-indexer] "${fonte.name}" → versão ${versionNumber} (${versionId}), ${pedacos.length} trecho(s)`,
   );
 
-  const admin = createAdminClient();
   let gravados = 0;
   // Trecho que não gravou NÃO pode seguir para a ativação: a versão fica
   // incompleta e a anterior — que funciona — é quem deve continuar no ar.
@@ -401,11 +404,11 @@ export async function indexarFonte(
       embedding = r.embedding;
     } catch (err) {
       const detalhe = err instanceof Error ? err.message : String(err);
-      await markVersionFailed(versionId, fonte.organization_id, `embed@${i}: ${detalhe}`);
+      await markVersionFailed(versionId, fonte.organization_id, `embed@${i}: ${detalhe}`, db);
       return { tipo: "erro", detalhe: `embedding falhou no trecho ${i}: ${detalhe}` };
     }
 
-    const { error: upErr } = await admin.from("ai_chunks").upsert(
+    const { error: upErr } = await scopedDb.from("ai_chunks").upsert(
       {
         organization_id: fonte.organization_id,
         kb_version_id: versionId,
@@ -432,26 +435,24 @@ export async function indexarFonte(
   }
 
   if (gravados === 0) {
-    await markVersionFailed(versionId, fonte.organization_id, "nenhum trecho gravado");
+    await markVersionFailed(versionId, fonte.organization_id, "nenhum trecho gravado", db);
     return { tipo: "erro", detalhe: "nenhum_trecho_gravado" };
   }
 
   if (falhas.length > 0) {
-    await markVersionFailed(
-      versionId,
-      fonte.organization_id,
-      `${falhas.length} de ${pedacos.length} trechos não gravaram: ${falhas
-        .map((f) => `posição ${f.posicao} (${f.mensagem})`)
-        .join("; ")}`,
-    );
+    const motivo = `${falhas.length} de ${pedacos.length} trechos não gravaram: ${falhas
+      .map((f) => `posição ${f.posicao} (${f.mensagem})`)
+      .join("; ")}`;
+    await markVersionFailed(versionId, fonte.organization_id, motivo, db);
     return { tipo: "erro", detalhe: `trechos_nao_gravados:${falhas.length}` };
   }
 
-  await markVersionReady(versionId, fonte.organization_id, gravados);
+  await markVersionReady(versionId, fonte.organization_id, gravados, db);
   await activateVersion({
     organizationId: fonte.organization_id,
     knowledgeSourceId: fonte.id,
     versionId,
+    db,
   });
 
   return { tipo: "ok", versionId, chunks: gravados };
@@ -468,7 +469,7 @@ export async function indexarFonte(
  * o dado que o worker antigo ignorava. Para o catálogo, o evento é de produto e
  * a fonte é a de catálogo da organização, criada na primeira sincronização.
  */
-async function fonteDoEvento(row: EventRow): Promise<{
+async function fonteDoEvento(row: EventRow, db: SupabaseClient): Promise<{
   fonte: FonteRow | null;
   productId?: string;
   motivo?: string;
@@ -476,14 +477,14 @@ async function fonteDoEvento(row: EventRow): Promise<{
   if (row.event_type === "knowledge_source.updated") {
     const sourceId = String(row.payload["knowledge_source_id"] ?? "");
     if (!sourceId) return { fonte: null, motivo: "evento_sem_knowledge_source_id" };
-    const fonte = await carregarFonte(row.organization_id, sourceId);
+    const fonte = await carregarFonte(row.organization_id, sourceId, db);
     return { fonte, ...(fonte ? {} : { motivo: "fonte_nao_encontrada" }) };
   }
 
   // nuvemshop.product_synced
   const productId = String(row.payload["product_id"] ?? "");
   if (!productId) return { fonte: null, motivo: "evento_sem_product_id" };
-  const fonte = await garantirFonteDeCatalogo(row.organization_id);
+  const fonte = await garantirFonteDeCatalogo(row.organization_id, db);
   return { fonte, productId, ...(fonte ? {} : { motivo: "fonte_de_catalogo_indisponivel" }) };
 }
 
@@ -494,10 +495,12 @@ async function fonteDoEvento(row: EventRow): Promise<{
  * coluna NOT NULL — todo trecho de catálogo era recusado pelo banco, e o
  * `console.warn` de cada recusa era a única evidência.
  */
-async function garantirFonteDeCatalogo(organizationId: string): Promise<FonteRow | null> {
-  const admin = createAdminClient();
+async function garantirFonteDeCatalogo(
+  organizationId: string,
+  db: SupabaseClient,
+): Promise<FonteRow | null> {
 
-  const { data: existente } = await admin
+  const { data: existente } = await db
     .from("ai_knowledge_sources")
     .select("id, organization_id, agent_id, source_type, name, status, is_active, source_metadata")
     .eq("organization_id", organizationId)
@@ -506,7 +509,7 @@ async function garantirFonteDeCatalogo(organizationId: string): Promise<FonteRow
     .maybeSingle();
   if (existente) return existente as FonteRow;
 
-  const { data: criada, error } = await admin
+  const { data: criada, error } = await db
     .from("ai_knowledge_sources")
     .insert({
       organization_id: organizationId,
@@ -543,7 +546,8 @@ export async function processRagIndexer(row: EventRow): Promise<HandlerResult> {
   }
 
   try {
-    const { fonte, productId, motivo } = await fonteDoEvento(row);
+    const dataClient = await getTenantDataClient(row.organization_id, createAdminClient());
+    const { fonte, productId, motivo } = await fonteDoEvento(row, dataClient);
     if (!fonte) {
       return { consumer_key: consumerKey, status: "skipped", detail: motivo ?? "fonte_indisponivel" };
     }
@@ -566,13 +570,14 @@ export async function processRagIndexer(row: EventRow): Promise<HandlerResult> {
         last_index_error:
           "Falta uma chave da OpenAI para indexar. Cadastre uma em IA › Credenciais " +
           "(ou defina OPENAI_API_KEY na instalação) e este material entra sozinho.",
-      });
+      }, dataClient);
       await avisarNaCentral(
         row.organization_id,
         fonte,
         `"${fonte.name}" ainda não entrou na base de conhecimento`,
         "Falta uma chave da OpenAI para preparar o material. Cadastre uma em IA › Credenciais " +
-          "e a indexação recomeça sozinha — nada do que você enviou foi perdido.",
+        "e a indexação recomeça sozinha — nada do que você enviou foi perdido.",
+        dataClient,
       );
       // `retry` e não `skipped`: o drain conta `skipped` como sucesso e marca o
       // evento consumido para sempre. Quem cadastrasse a chave amanhã não teria
@@ -585,9 +590,9 @@ export async function processRagIndexer(row: EventRow): Promise<HandlerResult> {
       };
     }
 
-    await marcarFonte(row.organization_id, fonte.id, { last_index_status: "indexando" });
+    await marcarFonte(row.organization_id, fonte.id, { last_index_status: "indexando" }, dataClient);
 
-    const resultado = await indexarFonte(fonte, chave, productId ? { productId } : {});
+    const resultado = await indexarFonte(fonte, chave, productId ? { productId } : {}, dataClient);
 
     if (resultado.tipo === "ok") {
       await marcarFonte(row.organization_id, fonte.id, {
@@ -595,7 +600,7 @@ export async function processRagIndexer(row: EventRow): Promise<HandlerResult> {
         last_index_error: null,
         last_indexed_at: new Date().toISOString(),
         chunks_count: resultado.chunks,
-      });
+      }, dataClient);
       return {
         consumer_key: consumerKey,
         status: "ok",
@@ -605,7 +610,7 @@ export async function processRagIndexer(row: EventRow): Promise<HandlerResult> {
 
     if (resultado.tipo === "pulado") {
       // Não é falha: limpar o `indexando` para a tela não ficar girando.
-      await marcarFonte(row.organization_id, fonte.id, { last_index_status: null });
+      await marcarFonte(row.organization_id, fonte.id, { last_index_status: null }, dataClient);
       return { consumer_key: consumerKey, status: "skipped", detail: resultado.motivo };
     }
 
@@ -616,12 +621,13 @@ export async function processRagIndexer(row: EventRow): Promise<HandlerResult> {
     await marcarFonte(row.organization_id, fonte.id, {
       last_index_status: "failed",
       last_index_error: resultado.detalhe,
-    });
+    }, dataClient);
     await avisarNaCentral(
       row.organization_id,
       fonte,
       `"${fonte.name}" não entrou na base de conhecimento`,
       `O agente ainda não sabe o que está neste material. Motivo: ${resultado.detalhe}`,
+      dataClient,
     );
     return { consumer_key: consumerKey, status: "error", detail: resultado.detalhe };
   } catch (err) {
@@ -635,3 +641,4 @@ export async function processRagIndexer(row: EventRow): Promise<HandlerResult> {
     return { consumer_key: consumerKey, status: "error", detail: detalhe };
   }
 }
+

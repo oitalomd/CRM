@@ -56,6 +56,7 @@ import { traduzir } from "@/lib/i18n/dicionario";
 import { normalizarIdioma, type Idioma } from "@/lib/i18n/idiomas";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -115,35 +116,66 @@ async function handle(req: NextRequest): Promise<Response> {
   const agora = Date.now();
   const corte = new Date(agora - SILENCIO_ATE_COBRAR_MS).toISOString();
 
-  // `updated_at` e não `opened_at`: qualquer mexida no caso (uma nota do agente,
-  // uma transição) conta como "alguém encostou". Cobrar por idade absoluta
-  // avisaria de novo sobre um caso que a equipe está tratando naquele instante.
-  const { data, error } = await admin
-    .from("agent_cases")
-    .select("id, organization_id, title, opened_at, updated_at, followup_attempts")
-    .eq("status", "awaiting_human")
-    .lt("updated_at", corte)
-    .lt("followup_attempts", TETO_DE_COBRANCAS)
-    .order("updated_at", { ascending: true })
-    .limit(LIMITE_DA_VARREDURA);
-
-  if (error) {
-    logger.error("[case-stale-watcher] consulta falhou", { error: error.message, requestId });
-    return fail("internal_error", "Falha ao buscar casos parados.", 500, { requestId });
+  const { data: organizations, error: organizationsError } = await admin
+    .from("organizations")
+    .select("id");
+  if (organizationsError) {
+    logger.error("[case-stale-watcher] falha ao listar organizações", {
+      error: organizationsError.message,
+      requestId,
+    });
+    return fail("internal_error", "Falha ao buscar organizações.", 500, { requestId });
   }
 
-  const casos = data ?? [];
+  const dataClientByOrg = new Map<string, ReturnType<typeof createAdminClient>>();
+  const casos: Array<Record<string, unknown>> = [];
+  for (const organization of organizations ?? []) {
+    try {
+      const dataClient = await getTenantDataClient(organization.id, admin);
+      dataClientByOrg.set(organization.id, dataClient);
+      // `updated_at` e não `opened_at`: qualquer mexida no caso conta como
+      // alguém encostou. A consulta é feita no data plane do tenant.
+      const { data, error } = await dataClient
+        .from("agent_cases")
+        .select("id, organization_id, title, opened_at, updated_at, followup_attempts")
+        .eq("organization_id", organization.id)
+        .eq("status", "awaiting_human")
+        .lt("updated_at", corte)
+        .lt("followup_attempts", TETO_DE_COBRANCAS)
+        .order("updated_at", { ascending: true })
+        .limit(LIMITE_DA_VARREDURA);
+      if (error) {
+        logger.error("[case-stale-watcher] consulta por organização falhou", {
+          organizationId: organization.id,
+          error: error.message,
+          requestId,
+        });
+        continue;
+      }
+      casos.push(...((data ?? []) as Array<Record<string, unknown>>));
+    } catch (err) {
+      logger.warn("[case-stale-watcher] data plane indisponível; organização ignorada", {
+        organizationId: organization.id,
+        error: err instanceof Error ? err.message : String(err),
+        requestId,
+      });
+    }
+  }
+  casos.sort((a, b) => String(a.updated_at).localeCompare(String(b.updated_at)));
+  casos.splice(LIMITE_DA_VARREDURA);
   let avisados = 0;
   let jaAvisados = 0;
 
   for (const caso of casos) {
+    const dataClient = dataClientByOrg.get(caso.organization_id as string);
+    if (!dataClient) continue;
     const horas = (agora - Date.parse(caso.opened_at as string)) / 3_600_000;
     const tentativa = (caso.followup_attempts as number) + 1;
 
     // Um aviso ABERTO por caso: enquanto o anterior não for resolvido, não
     // nasce outro. Quem resolve o aviso sem resolver o caso é cobrado de novo no
     // ciclo seguinte — e é `followup_attempts` que impede isso para sempre.
-    const { data: jaTem } = await admin
+    const { data: jaTem } = await dataClient
       .from("agent_inbox_items")
       .select("id")
       .eq("organization_id", caso.organization_id)
@@ -157,7 +189,7 @@ async function handle(req: NextRequest): Promise<Response> {
       continue;
     }
 
-    const { error: erroAviso } = await admin.from("agent_inbox_items").insert({
+    const { error: erroAviso } = await dataClient.from("agent_inbox_items").insert({
       organization_id: caso.organization_id,
       kind: "case_stale",
       // `warn` e não `critical`: há um cliente esperando, mas nada quebrou. O
@@ -189,7 +221,7 @@ async function handle(req: NextRequest): Promise<Response> {
     // própria cobrança parecer "alguém encostou no caso" e adiaria a seguinte
     // por mais 24h — o watcher sabotando a si mesmo. O trigger de updated_at
     // desta tabela é o que decide; aqui só o contador muda.
-    const { error: erroContador } = await admin
+    const { error: erroContador } = await dataClient
       .from("agent_cases")
       .update({ followup_attempts: tentativa })
       .eq("id", caso.id)
@@ -217,7 +249,7 @@ async function handle(req: NextRequest): Promise<Response> {
     });
   }
 
-  const passagens = await cobrarPassagensEsquecidas(admin, corte, requestId);
+  const passagens = await cobrarPassagensEsquecidas(dataClientByOrg, admin, corte, requestId);
 
   if (passagens.cobradas > 0) {
     await audit({
@@ -305,38 +337,47 @@ async function idiomaDaOrganizacao(
  * Sem tabela nova, sem `kind` novo, sem evento novo.
  */
 async function cobrarPassagensEsquecidas(
-  admin: ReturnType<typeof createAdminClient>,
+  dataClients: Map<string, ReturnType<typeof createAdminClient>>,
+  controlPlane: ReturnType<typeof createAdminClient>,
   corte: string,
   requestId: string,
 ): Promise<{ examinadas: number; cobradas: number }> {
-  const { data, error } = await admin
-    .from("passagens_de_atendimento")
-    .select("id, organization_id, conversation_id, criado_em, cobrancas")
-    .is("reconhecido_em", null)
-    .lt("criado_em", corte)
-    .lt("cobrancas", TETO_DE_COBRANCAS)
-    .order("criado_em", { ascending: true })
-    .limit(LIMITE_DA_VARREDURA);
-
-  if (error) {
-    logger.error("[case-stale-watcher] varredura de passagens falhou", {
-      error: error.message,
-      requestId,
-    });
-    return { examinadas: 0, cobradas: 0 };
+  const passagens: Array<Record<string, unknown>> = [];
+  for (const [organizationId, dataClient] of dataClients) {
+    const { data, error } = await dataClient
+      .from("passagens_de_atendimento")
+      .select("id, organization_id, conversation_id, criado_em, cobrancas")
+      .eq("organization_id", organizationId)
+      .is("reconhecido_em", null)
+      .lt("criado_em", corte)
+      .lt("cobrancas", TETO_DE_COBRANCAS)
+      .order("criado_em", { ascending: true })
+      .limit(LIMITE_DA_VARREDURA);
+    if (error) {
+      logger.error("[case-stale-watcher] varredura de passagens falhou", {
+        organizationId,
+        error: error.message,
+        requestId,
+      });
+      continue;
+    }
+    passagens.push(...((data ?? []) as Array<Record<string, unknown>>));
   }
+  passagens.sort((a, b) => String(a.criado_em).localeCompare(String(b.criado_em)));
+  passagens.splice(LIMITE_DA_VARREDURA);
 
-  const passagens = data ?? [];
   const idiomas = new Map<string, Idioma>();
   const agora = Date.now();
   let cobradas = 0;
 
   for (const p of passagens) {
     const orgId = p.organization_id as string;
+    const dataClient = dataClients.get(orgId);
+    if (!dataClient) continue;
     const conversaId = p.conversation_id as string;
     const tentativa = (p.cobrancas as number) + 1;
     const horas = (agora - Date.parse(p.criado_em as string)) / 3_600_000;
-    const idioma = await idiomaDaOrganizacao(admin, orgId, idiomas);
+    const idioma = await idiomaDaOrganizacao(controlPlane, orgId, idiomas);
     const t = (texto: string) => traduzir(texto, idioma);
 
     const titulo = `${t("Alguém pediu atendimento e ninguém assumiu")} — ${esperaEmPalavras(horas, t)}`;
@@ -352,7 +393,7 @@ async function cobrarPassagensEsquecidas(
     // O aviso mais recente daquela conversa, em QUALQUER estado: um resolvido
     // sem ninguém ter assumido é o caso que mais importa — ele sumiu da tela sem
     // o problema sumir junto.
-    const { data: existente } = await admin
+    const { data: existente } = await dataClient
       .from("agent_inbox_items")
       .select("id, status")
       .eq("organization_id", orgId)
@@ -365,14 +406,14 @@ async function cobrarPassagensEsquecidas(
 
     const erroDoAviso = existente
       ? (
-          await admin
+          await dataClient
             .from("agent_inbox_items")
             .update({ status: "open", resolved_at: null, severity: "warn", title: titulo, body: corpo })
             .eq("id", (existente as { id: string }).id)
             .eq("organization_id", orgId)
         ).error
       : (
-          await admin.from("agent_inbox_items").insert({
+          await dataClient.from("agent_inbox_items").insert({
             organization_id: orgId,
             kind: "handoff",
             severity: "warn",
@@ -395,7 +436,7 @@ async function cobrarPassagensEsquecidas(
 
     // O contador sobe DEPOIS do aviso: subir antes faria uma falha de insert
     // gastar uma das três tentativas sem ninguém ter sido avisado de nada.
-    const { error: erroContador } = await admin
+    const { error: erroContador } = await dataClient
       .from("passagens_de_atendimento")
       .update({ cobrancas: tentativa })
       .eq("id", p.id as string)
@@ -416,3 +457,4 @@ async function cobrarPassagensEsquecidas(
 
 export const GET = handle;
 export const POST = handle;
+

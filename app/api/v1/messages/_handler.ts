@@ -46,7 +46,6 @@ import {
 import type { ListMessagesQuery, SendMessageInput } from "@/lib/schemas";
 import { sendTemplateForSession } from "@/lib/channels/meta/send-template-for-session";
 import { nomeDoContato } from "@/lib/contacts/rotulo-do-contato";
-import { createAdminClient } from "@/lib/supabase/admin";
 import type { Message } from "@/lib/types/messaging";
 
 type SB = SupabaseClient;
@@ -804,6 +803,7 @@ export async function sendMessageHandler(
               await adapter.sendTemplate({
                 beforeSend: checkBoundary,
                 organizationId: ctx.organization_id,
+                dataClient: supabase,
                 sessionRef: resolveSessionRef(c.channel_sessions),
                 to: chatId,
                 providerConversationId: c.provider_conversation_id,
@@ -826,8 +826,7 @@ export async function sendMessageHandler(
             });
       } else if (input.media_storage_path) {
         // Storage-first: signed URL curta só pro canal baixar (nunca base64).
-        const admin = createAdminClient();
-        const { data: signed, error: signErr } = await admin.storage
+        const { data: signed, error: signErr } = await supabase.storage
           .from("whatsapp-media")
           .createSignedUrl(input.media_storage_path, 600);
         if (signErr || !signed?.signedUrl) {
@@ -838,6 +837,7 @@ export async function sendMessageHandler(
         ({ externalId } = await adapter.send({
           beforeSend: checkBoundary,
           organizationId: ctx.organization_id,
+          dataClient: supabase,
           sessionRef: resolveSessionRef(c.channel_sessions),
           to: chatId,
           providerConversationId: c.provider_conversation_id,
@@ -869,6 +869,7 @@ export async function sendMessageHandler(
         ({ externalId } = await adapter.send({
           beforeSend: checkBoundary,
           organizationId: ctx.organization_id,
+          dataClient: supabase,
           sessionRef: resolveSessionRef(c.channel_sessions),
           to: chatId,
           providerConversationId: c.provider_conversation_id,
@@ -886,6 +887,7 @@ export async function sendMessageHandler(
         ({ externalId } = await adapter.send({
           beforeSend: checkBoundary,
           organizationId: ctx.organization_id,
+          dataClient: supabase,
           sessionRef: resolveSessionRef(c.channel_sessions),
           to: chatId,
           providerConversationId: c.provider_conversation_id,
@@ -1056,3 +1058,4 @@ export async function sendMessageHandler(
 
   return message;
 }
+

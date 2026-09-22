@@ -2,6 +2,7 @@ import { loadOnboardingChannel } from "@/lib/channels/onboarding-session";
 import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
 import { loadAuthUser, resolveActiveOrg } from "@/lib/auth/server";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 /**
  * Proxy WAHA's QR endpoint so the browser can <img src="..." /> without
@@ -21,7 +22,10 @@ export async function GET() {
     return new NextResponse(null, { status: 503 });
   }
 
-  const channel = await loadOnboardingChannel(await createClient(), activeOrg.orgId);
+  const channel = await loadOnboardingChannel(
+    await getTenantDataClient(activeOrg.orgId, await createClient()),
+    activeOrg.orgId,
+  );
   if (!channel || channel.archived_at) return new NextResponse(null, { status: 404 });
   const sessionName = channel.waha_session_name;
   const upstream = await fetch(
@@ -45,3 +49,4 @@ export async function GET() {
     },
   });
 }
+

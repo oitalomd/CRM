@@ -29,6 +29,7 @@ import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { PROVIDERS_DE_MENSAGEM } from "@/lib/channels/capabilities";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -82,33 +83,62 @@ async function handle(req: NextRequest): Promise<Response> {
   const admin = createAdminClient();
   const cutoff = new Date(Date.now() - REFRESH_AFTER_DAYS * 86_400_000).toISOString();
 
-  // Nunca buscados (null) OU buscados há mais de REFRESH_AFTER_DAYS.
-  //
-  // `is_anonymized` fora é OBRIGATÓRIO, não otimização: sem esse filtro, um
-  // contato anonimizado por pedido LGPD voltaria a ser varrido no refresh
-  // seguinte e o cron BAIXARIA O ROSTO DELE DE NOVO — reintroduzindo, sozinho e
-  // periodicamente, o dado pessoal que acabara de ser apagado. A anonimização é
-  // declarada irreversível no produto; esta linha é o que sustenta isso.
-  const { data: contatos, error: queryError } = await admin
-    .from("contacts")
-    .select("id, organization_id, wa_identity, wa_lid, phone_number, avatar_storage_path")
-    .not("wa_identity", "is", null)
-    .eq("is_anonymized", false)
-    .or(`avatar_updated_at.is.null,avatar_updated_at.lt.${cutoff}`)
-    .order("avatar_updated_at", { ascending: true, nullsFirst: true })
-    .limit(SCAN_LIMIT);
-
-  if (queryError) {
-    logger.error("[contact-avatars] query failed", { detail: queryError.message, requestId });
-    return fail("internal_error", queryError.message, 500, { requestId });
+  const { data: organizations, error: organizationsError } = await admin
+    .from("organizations")
+    .select("id");
+  if (organizationsError) {
+    logger.error("[contact-avatars] failed to list organizations", {
+      detail: organizationsError.message,
+      requestId,
+    });
+    return fail("internal_error", organizationsError.message, 500, { requestId });
   }
 
-  const rows = (contatos ?? []) as ContactRow[];
+  const rows: ContactRow[] = [];
+  const dataClientByOrg = new Map<string, ReturnType<typeof createAdminClient>>();
+  for (const organization of organizations ?? []) {
+    let dataClient: ReturnType<typeof createAdminClient>;
+    try {
+      dataClient = await getTenantDataClient(organization.id, admin);
+    } catch (err) {
+      logger.warn("[contact-avatars] data plane unavailable; organization skipped", {
+        organizationId: organization.id,
+        detail: err instanceof Error ? err.message : String(err),
+        requestId,
+      });
+      continue;
+    }
+    dataClientByOrg.set(organization.id, dataClient);
+    const { data: contatos, error: queryError } = await dataClient
+      .from("contacts")
+      .select("id, organization_id, wa_identity, wa_lid, phone_number, avatar_storage_path")
+      .eq("organization_id", organization.id)
+      .not("wa_identity", "is", null)
+      .eq("is_anonymized", false)
+      .or(`avatar_updated_at.is.null,avatar_updated_at.lt.${cutoff}`)
+      .order("avatar_updated_at", { ascending: true, nullsFirst: true })
+      .limit(SCAN_LIMIT);
+    if (queryError) {
+      logger.error("[contact-avatars] query by organization failed", {
+        organizationId: organization.id,
+        detail: queryError.message,
+        requestId,
+      });
+      continue;
+    }
+    rows.push(...((contatos ?? []) as ContactRow[]));
+  }
+  rows.splice(SCAN_LIMIT);
   let atualizados = 0;
   let semFoto = 0;
   let falhas = 0;
 
   for (const c of rows) {
+    const dataClient = dataClientByOrg.get(c.organization_id);
+    if (!dataClient) {
+      semFoto++;
+      continue;
+    }
     const chatId = chatIdDoContato(c);
     // Carimba mesmo sem conseguir resolver o chatId: sem isso o contato voltaria
     // em TODA rodada do cron, para sempre, batendo no canal à toa.
@@ -122,7 +152,7 @@ async function handle(req: NextRequest): Promise<Response> {
     // escolheria para corrigir. Devolve as linhas afetadas para que quem chamou
     // saiba se a gravação valeu.
     const carimbar = async (path: string | null): Promise<boolean> => {
-      const { data: afetadas } = await admin
+      const { data: afetadas } = await dataClient
         .from("contacts")
         .update({
           ...(path !== null ? { avatar_storage_path: path } : {}),
@@ -142,7 +172,7 @@ async function handle(req: NextRequest): Promise<Response> {
     }
 
     try {
-      const { data: sessao } = await admin
+      const { data: sessao } = await dataClient
         .from("channel_sessions")
         .select("waha_session_name, provider")
         .eq("organization_id", c.organization_id)
@@ -205,7 +235,7 @@ async function handle(req: NextRequest): Promise<Response> {
       // de acumular um arquivo órfão por refresh (7 dias × N contatos viraria
       // lixo pago no bucket).
       const path = `${c.organization_id}/avatars/${c.id}.jpg`;
-      const { error: upErr } = await admin.storage
+      const { error: upErr } = await dataClient.storage
         .from("whatsapp-media")
         .upload(path, buf, { contentType: "image/jpeg", upsert: true });
       if (upErr) {
@@ -221,7 +251,7 @@ async function handle(req: NextRequest): Promise<Response> {
         // no bucket sem ponteiro nenhum — pior que o defeito original, porque
         // invisível. Devolvemos à fila de redação, o mesmo caminho que a cascata
         // usa, e o worker de limpeza remove.
-        await admin.from("storage_redaction_queue").upsert(
+        await dataClient.from("storage_redaction_queue").upsert(
           {
             organization_id: c.organization_id,
             bucket: "whatsapp-media",
@@ -261,3 +291,4 @@ async function handle(req: NextRequest): Promise<Response> {
 
 export const GET = handle;
 export const POST = handle;
+

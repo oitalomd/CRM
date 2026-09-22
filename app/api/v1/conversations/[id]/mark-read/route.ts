@@ -11,7 +11,8 @@ import { type NextRequest } from "next/server";
 import { ApiError } from "@/lib/api/types";
 import { ok, fail } from "@/lib/api/wrappers";
 import { requireRole } from "@/lib/auth/require-role";
-import { createClient } from "@/lib/supabase/server";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 import { markConversationReadHandler } from "../../_handler";
 
@@ -27,10 +28,15 @@ export async function POST(_req: NextRequest, ctx: RouteCtx): Promise<Response> 
 
   const requestId = randomUUID();
   const { id } = await ctx.params;
-  const supabase = await createClient();
-
   const authz = await requireRole("agent", { requestId, resource: "conversations" });
   if (!authz.ok) return authz.response;
+
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(authz.org.orgId, createAdminClient());
+  } catch (err) {
+    return fail("tenant_data_plane_unavailable", err instanceof Error ? err.message : "Tenant data plane unavailable.", 503, { requestId });
+  }
 
   try {
     const conv = await markConversationReadHandler(
@@ -51,3 +57,4 @@ export async function POST(_req: NextRequest, ctx: RouteCtx): Promise<Response> 
     throw err;
   }
 }
+

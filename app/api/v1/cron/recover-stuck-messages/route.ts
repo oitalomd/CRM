@@ -43,6 +43,7 @@ import { audit } from "@/lib/audit";
 import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -215,13 +216,29 @@ async function handle(req: NextRequest): Promise<Response> {
     return fail("forbidden", "Cron secret missing or invalid.", 403, { requestId });
   }
 
-  let result: RecoverResult;
-  try {
-    result = await recoverStuckMessages(createAdminClient(), new Date(), requestId);
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    logger.error("[recover-stuck-messages] falhou", { error: detail, requestId });
-    return fail("internal_error", "Failed to recover stuck messages.", 500, { requestId });
+  const controlPlane = createAdminClient();
+  const { data: organizations, error: organizationsError } = await controlPlane
+    .from("organizations")
+    .select("id")
+    .limit(50);
+  if (organizationsError) return fail("internal_error", "Failed to list organizations.", 500, { requestId });
+
+  const result: RecoverResult = { scanned: 0, failed: 0, organizations: 0 };
+  const orgsWithError: string[] = [];
+  for (const organization of organizations ?? []) {
+    const organizationId = organization.id as string;
+    try {
+      const tenant = await getTenantDataClient(organizationId, controlPlane);
+      const partial = await recoverStuckMessages(tenant, new Date(), requestId);
+      result.scanned += partial.scanned;
+      result.failed += partial.failed;
+      result.organizations += partial.organizations;
+    } catch (err) {
+      orgsWithError.push(organizationId);
+      logger.error("[recover-stuck-messages] organização falhou", {
+        error: err instanceof Error ? err.message : String(err), organizationId, requestId,
+      });
+    }
   }
 
   // Varredura que não marcou nada não é mutação e não ocupa linha de auditoria
@@ -236,7 +253,7 @@ async function handle(req: NextRequest): Promise<Response> {
     });
   }
 
-  return ok(result, { requestId });
+  return ok({ ...result, organizations_scanned: organizations?.length ?? 0, orgs_with_error: orgsWithError.length }, { requestId });
 }
 
 export async function GET(req: NextRequest): Promise<Response> {
@@ -246,3 +263,4 @@ export async function GET(req: NextRequest): Promise<Response> {
 export async function POST(req: NextRequest): Promise<Response> {
   return handle(req);
 }
+

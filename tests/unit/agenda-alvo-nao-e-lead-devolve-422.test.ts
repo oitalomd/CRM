@@ -42,10 +42,14 @@ import { NextRequest } from "next/server";
 
 import { requireRole } from "@/lib/auth/require-role";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import type { ActiveOrg, AuthUser } from "@/lib/auth/types";
 
 vi.mock("@/lib/auth/require-role", () => ({ requireRole: vi.fn() }));
 vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
+vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({ getTenantDataClient: vi.fn() }));
 
 const ORG = "22222222-2222-4222-8222-222222222222";
 const ANA = "11111111-1111-4111-8111-111111111111";
@@ -111,7 +115,10 @@ async function rota() {
 }
 
 function comBanco(opts: Parameters<typeof db>[0]) {
-  vi.mocked(createClient).mockResolvedValue(db(opts) as never);
+  const client = db(opts);
+  vi.mocked(createClient).mockResolvedValue(client as never);
+  vi.mocked(createAdminClient).mockReturnValue({} as ReturnType<typeof createAdminClient>);
+  vi.mocked(getTenantDataClient).mockResolvedValue(client as never);
 }
 
 beforeEach(() => {
@@ -177,3 +184,4 @@ describe("GET /api/v1/agenda/agendamentos — erro de quem chama não vira 500",
     expect(corpo.error?.code).toBe("internal_error");
   });
 });
+

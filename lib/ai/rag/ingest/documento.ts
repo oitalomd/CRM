@@ -19,6 +19,7 @@
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   ArquivoBinarioError,
   extractMarkdownText,
@@ -82,6 +83,7 @@ export function resolverExtensao(
 export async function extrairTextoDoArquivo(
   blobPath: string,
   extensaoDeclarada?: string,
+  db?: SupabaseClient,
 ): Promise<{ texto: string; extensao: ExtensaoAceita }> {
   const extensao = resolverExtensao(extensaoDeclarada ?? blobPath);
   if (!extensao) {
@@ -105,7 +107,7 @@ export async function extrairTextoDoArquivo(
     );
   }
 
-  const admin = createAdminClient();
+  const admin = db ?? createAdminClient();
   const { data: blob, error } = await admin.storage.from(BUCKET_DE_CONHECIMENTO).download(blobPath);
 
   if (error || !blob) {
@@ -184,3 +186,4 @@ export async function extrairTextoDoArquivo(
 
   return { texto, extensao };
 }
+

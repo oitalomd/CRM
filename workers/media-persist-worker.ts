@@ -22,6 +22,7 @@ import {
 import { storagePathFor } from "@/lib/messaging/media/types";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const MEDIA_PERSIST_CONSUMER_KEY = "media_persist_v1";
 // Espelha MAX_ATTEMPTS de lib/event-log/drain.ts (não exportado de lá).
@@ -47,7 +48,7 @@ export async function persistMessageMedia(row: EventRow): Promise<HandlerResult>
   const messageId = (row.payload.message_id as string | undefined) ?? row.entity_id;
   if (!messageId) return { consumer_key, status: "skipped", detail: "no message_id" };
 
-  const admin = createAdminClient();
+  const admin = await getTenantDataClient(row.organization_id, createAdminClient());
   const { data, error } = await admin
     .from("messages")
     // `channel_session_id` entra no select porque é ele que resolve QUEM baixa.
@@ -154,3 +155,4 @@ export async function persistMessageMedia(row: EventRow): Promise<HandlerResult>
 
   return { consumer_key, status: "ok" };
 }
+

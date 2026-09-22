@@ -4,7 +4,14 @@ import { apenasDeMembrosAtivos } from "@/lib/agenda/google/membros";
 import { audit } from "@/lib/audit";
 import { env } from "@/lib/env";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 export const dynamic = "force-dynamic";
+interface GoogleConnection {
+  id: string;
+  organization_id: string;
+  user_id: string;
+  calendar_selection_revision: string | null;
+}
 async function executar(req: NextRequest) {
   if (
     ![env.INTERNAL_CRON_SECRET, env.INTERNAL_SECRET]
@@ -16,28 +23,49 @@ async function executar(req: NextRequest) {
       { status: 401 },
     );
   const db = createAdminClient();
-  const { data: raw, error } = await db
-    .from("calendar_connections")
-    .select("id,organization_id,user_id,calendar_selection_revision")
-    .eq("status", "healthy")
-    .eq("provider", "google_calendar")
-    .order("updated_at")
+  const { data: organizations, error: organizationsError } = await db
+    .from("organizations")
+    .select("id")
     .limit(25);
-  if (error)
+  if (organizationsError)
     return NextResponse.json(
-      { error: { code: "internal_error", message: "Não foi possível ler as conexões Google." } },
+      { error: { code: "internal_error", message: "Não foi possível ler as organizações." } },
       { status: 500 },
     );
-  const connections = await apenasDeMembrosAtivos(db, raw ?? []);
+  const dataClientByOrg = new Map<string, ReturnType<typeof createAdminClient>>();
+  const rawConnections: GoogleConnection[] = [];
+  for (const organization of organizations ?? []) {
+    try {
+      const dataClient = await getTenantDataClient(organization.id, db);
+      dataClientByOrg.set(organization.id, dataClient);
+      const { data: raw, error } = await dataClient
+        .from("calendar_connections")
+        .select("id,organization_id,user_id,calendar_selection_revision")
+        .eq("organization_id", organization.id)
+        .eq("status", "healthy")
+        .eq("provider", "google_calendar")
+        .order("updated_at")
+        .limit(25);
+      if (error) throw error;
+      rawConnections.push(...((raw ?? []) as GoogleConnection[]));
+    } catch {
+      // Um data plane indisponível não pode impedir a sincronização das demais
+      // organizações nesta rodada.
+      continue;
+    }
+  }
+  const connections = await apenasDeMembrosAtivos(db, rawConnections);
   const effects = new Map<string, number>();
   let remainingCalendars = 25;
   for (const connection of connections) {
     if (remainingCalendars === 0) break;
     const org = connection.organization_id;
+    const dataClient = dataClientByOrg.get(org);
+    if (!dataClient) continue;
     let complete = true;
     let completedCalendars = 0;
     try {
-      const { data: catalog } = await db
+      const { data: catalog } = await dataClient
         .from("calendar_connection_calendars")
         .select("catalog_checked_at")
         .eq("organization_id", org)
@@ -48,10 +76,10 @@ async function executar(req: NextRequest) {
         !catalog?.[0]?.catalog_checked_at ||
         Date.parse(catalog[0].catalog_checked_at) < Date.now() - 86_400_000
       ) {
-        await refreshCatalog(db, org, connection.id);
+        await refreshCatalog(dataClient, org, connection.id);
         effects.set(org, (effects.get(org) ?? 0) + 1);
       }
-      const { data: calendars, error: calendarError } = await db
+      const { data: calendars, error: calendarError } = await dataClient
         .from("calendar_connection_calendars")
         .select("id,external_calendar_id,counts_for_conflicts,is_destination")
         .eq("organization_id", org)
@@ -63,7 +91,7 @@ async function executar(req: NextRequest) {
       if (calendarError) throw calendarError;
       for (const calendar of calendars ?? []) {
         if (!calendar.counts_for_conflicts && !calendar.is_destination) {
-          const { data: linked, error: linkError } = await db
+          const { data: linked, error: linkError } = await dataClient
             .from("calendar_google_reconcilable_appointments")
             .select("id")
             .eq("organization_id", org)
@@ -74,7 +102,7 @@ async function executar(req: NextRequest) {
           if (!linked?.length) {
             // Sem consumidor agora: retire do início do lote. Uma escolha
             // futura rearma o prazo na própria RPC de seleção.
-            const { error: deferredError } = await db
+            const { error: deferredError } = await dataClient
               .from("calendar_connection_calendars")
               .update({ sync_next_attempt_at: new Date(Date.now() + 86_400_000).toISOString() })
               .eq("organization_id", org)
@@ -85,12 +113,12 @@ async function executar(req: NextRequest) {
           }
         }
         remainingCalendars -= 1;
-        const result = await syncCalendar(db, org, calendar.id);
+        const result = await syncCalendar(dataClient, org, calendar.id);
         if (result !== "complete") complete = false;
         else completedCalendars += 1;
         if (result !== "busy") effects.set(org, (effects.get(org) ?? 0) + 1);
       }
-      await db
+      await dataClient
         .from("calendar_connections")
         .update({
           updated_at: new Date().toISOString(),
@@ -101,7 +129,7 @@ async function executar(req: NextRequest) {
         .eq("organization_id", org)
         .eq("id", connection.id);
     } catch {
-      await db
+      await dataClient
         .from("calendar_connections")
         .update({
           last_sync_error:
@@ -124,3 +152,4 @@ async function executar(req: NextRequest) {
 }
 export const GET = executar;
 export const POST = executar;
+

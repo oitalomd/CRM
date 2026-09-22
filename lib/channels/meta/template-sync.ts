@@ -14,6 +14,7 @@
  * no lado puro, que é testável contra a fixture real; a casca não decide nada.
  */
 import { createAdminClient } from "@/lib/supabase/admin";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { hashContract } from "./contract-hash";
 import { normalizeRejectedReason as rejectedReason } from "./webhook";
@@ -203,6 +204,7 @@ export function planSync(rows: MetaTemplateRow[], existing: LocalTemplate[]): Sy
 }
 
 export interface SyncInput {
+  db?: SupabaseClient;
   organizationId: string;
   wabaId: string;
   /** Token da Graph API. Resolvido de fonte confiável pelo chamador, nunca do body. */
@@ -254,7 +256,7 @@ async function fetchAllTemplates(input: SyncInput): Promise<unknown[]> {
  */
 export async function syncTemplates(input: SyncInput): Promise<SyncCounts> {
   const rows = (await fetchAllTemplates(input)) as MetaTemplateRow[];
-  const db = createAdminClient();
+  const db = input.db ?? createAdminClient();
 
   const { data: existing, error: readError } = await db
     .from("meta_templates")
@@ -289,3 +291,4 @@ export async function syncTemplates(input: SyncInput): Promise<SyncCounts> {
 
   return plano.counts;
 }
+

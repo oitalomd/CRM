@@ -35,7 +35,6 @@ export default defineConfig({
       "dist",
       ".claude/**",
       "tests/e2e/**",
-      "tests/invariants/**",
       "tests/journeys/**",
       // Bancada opcional: usa node:test, PostgreSQL próprio e Playwright com
       // configuração dedicada. Não depende do ambiente da suíte do produto.
@@ -54,11 +53,28 @@ export default defineConfig({
     projects: [
       {
         extends: true,
-        test: { name: "cercas", environment: "node", include: CERCAS },
+        // `CERCAS` já é a seleção calculada pelo módulo auxiliar e inclui os
+        // invariantes estruturais. Não herdar a exclusão do projeto produto:
+        // ela fazia o Vitest listar os arquivos corretos e depois eliminar
+        // todos por `tests/invariants/**`, deixando `pnpm cercas` sem testes.
+        test: {
+          name: "cercas",
+          environment: "node",
+          include: CERCAS,
+          exclude: ["**/node_modules/**", ".next", "dist", ".claude/**", "tests/e2e/**", "tests/journeys/**"],
+        },
       },
       {
         extends: true,
-        test: { name: "produto", exclude: CERCAS },
+        test: {
+          name: "produto",
+          exclude: [
+            ...CERCAS,
+            "tests/invariants/**",
+            "tests/e2e/**",
+            "tests/journeys/**",
+          ],
+        },
       },
     ],
   },
@@ -71,3 +87,4 @@ export default defineConfig({
     },
   },
 });
+

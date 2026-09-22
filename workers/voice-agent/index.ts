@@ -50,6 +50,7 @@ import {
 } from "@/lib/voip/ariClient";
 import { AudioSocketCallBridge } from "./audioSocketBridge";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { getActiveVoiceAgent } from "@/lib/ai/agents";
 import { resolveOrCreateCallerContact } from "@/lib/voip/resolve-caller";
 import { garantirLeadDaConversa } from "@/lib/leads/nascimento-do-lead";
@@ -240,7 +241,8 @@ async function handleAudioSocketConnection(socket: net.Socket, uuid: string, lef
     return;
   }
 
-  const agent = await getActiveVoiceAgent(callRow.organization_id);
+  const dataClient = await getTenantDataClient(callRow.organization_id, supabaseAdmin);
+  const agent = await getActiveVoiceAgent(callRow.organization_id, dataClient);
   if (!agent) {
     console.error(`[audiosocket] nenhum agente de voz ativo pra org ${callRow.organization_id}`);
     socket.end();
@@ -255,7 +257,7 @@ async function handleAudioSocketConnection(socket: net.Socket, uuid: string, lef
   // dois round-trips era exatamente a demora sentida antes da IA "notar" que
   // o cliente já estava falando (ver AudioSocketCallContext.knowledgeSourceIdsPromise).
   const knowledgeSourceIdsPromise = resolverAcervoDoAgente(
-    supabaseAdmin,
+    dataClient,
     callRow.organization_id,
     agent.id,
   ).catch((err) => {
@@ -277,7 +279,7 @@ async function handleAudioSocketConnection(socket: net.Socket, uuid: string, lef
     searchKnowledge: async (pergunta: string) => {
       const knowledgeSourceIds = await knowledgeSourceIdsPromise;
       if (knowledgeSourceIds.length === 0) return { trechos: [] };
-      const resultado = await buscarConhecimento(supabaseAdmin, {
+      const resultado = await buscarConhecimento(dataClient, {
         organizationId: callRow.organization_id,
         knowledgeSourceIds,
         pergunta,
@@ -291,7 +293,7 @@ async function handleAudioSocketConnection(socket: net.Socket, uuid: string, lef
   const answeredAt = new Date().toISOString();
   activeAudioSocketCalls.set(uuid, { bridge, callRowId: callRow.id, answeredAt, transcript: [] });
 
-  await supabaseAdmin
+  await dataClient
     .from("voice_calls")
     .update({ status: "connected", answered_at: answeredAt, handled_by: "ai" })
     .eq("id", callRow.id);
@@ -396,3 +398,4 @@ function main() {
 }
 
 main();
+

@@ -7,6 +7,7 @@
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { citacaoDaLei, perfilDoPais } from "@/lib/legal/perfil-do-pais";
 import { logger } from "@/lib/logger";
 import { maskPhone } from "@/lib/lgpd/mask";
@@ -488,6 +489,7 @@ interface CollectArgs {
    * instalação; resolver mais esta ali não custa visita nenhuma aqui.
    */
   dpoDaInstalacao?: string | null;
+  admin?: SupabaseClient;
 }
 
 const RECENT_MESSAGES_LIMIT = 100;
@@ -547,7 +549,7 @@ async function lerControlador(
 }
 
 export async function collectExportData(args: CollectArgs): Promise<ExportPayload> {
-  const admin = createAdminClient();
+  const admin = args.admin ?? createAdminClient();
   const { organizationId, requestId, externalCustomerId } = args;
   // ANTES do primeiro `return`: o caminho "nenhum dado localizado" também gera
   // um relatório entregue ao titular, e ele precisa nomear o controlador igual.
@@ -1328,3 +1330,4 @@ function emptyPayload(
     avisos_de_caso: [],
   };
 }
+

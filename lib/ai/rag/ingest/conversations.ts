@@ -31,6 +31,7 @@ import {
   markVersionReady,
 } from "@/lib/ai/rag/version";
 import { createAdminClient } from "@/lib/supabase/admin";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 const CONV_MAX_CHARS = 1600;
 const CONV_OVERLAP_CHARS = 200;
@@ -43,6 +44,7 @@ export interface IngestConversationsArgs {
   sinceTs: Date;
   /** Max conversations processed per call. Default 50. */
   cap?: number;
+  dataClient: SupabaseClient;
 }
 
 export interface IngestConversationsResult {
@@ -67,10 +69,9 @@ export interface IngestConversationsResult {
 async function ensureConversationsSource(
   organizationId: string,
   agentId: string,
+  db: SupabaseClient,
 ): Promise<string | null> {
-  const admin = createAdminClient();
-
-  const { data: existentes } = await admin
+  const { data: existentes } = await db
     .from("ai_knowledge_sources")
     .select("id")
     .eq("organization_id", organizationId)
@@ -82,7 +83,7 @@ async function ensureConversationsSource(
   const primeira = (existentes ?? [])[0] as { id: string } | undefined;
   if (primeira) return primeira.id;
 
-  const { data: inserted, error } = await admin
+  const { data: inserted, error } = await db
     .from("ai_knowledge_sources")
     .insert({
       organization_id: organizationId,
@@ -135,7 +136,8 @@ export async function ingestConversationsBatch(
 ): Promise<IngestConversationsResult> {
   const { organizationId, agentId, sinceTs } = args;
   const cap = args.cap ?? 50;
-  const admin = createAdminClient();
+  const db = args.dataClient;
+  const controlPlane = createAdminClient();
 
   // A chave é resolvida UMA vez por lote, e POR ORGANIZAÇÃO: a versão anterior
   // perguntava ao `process.env`, então uma organização que tivesse cadastrado a
@@ -149,13 +151,13 @@ export async function ingestConversationsBatch(
     return { processed: 0, flaggedReview: 0, skipped: 0, embeddingSkipped: true };
   }
 
-  const sourceId = await ensureConversationsSource(organizationId, agentId);
+  const sourceId = await ensureConversationsSource(organizationId, agentId, db);
   if (!sourceId) {
     return { processed: 0, flaggedReview: 0, skipped: 0, embeddingSkipped: false };
   }
 
   // 1. Pull eligible conversations.
-  const { data: convRows, error: convErr } = await admin
+  const { data: convRows, error: convErr } = await db
     .from("conversations")
     .select("id, organization_id")
     .eq("organization_id", organizationId)
@@ -183,6 +185,7 @@ export async function ingestConversationsBatch(
       knowledgeSourceId: sourceId,
       agentId,
       sourceType: "conversas",
+      db,
     });
     versionId = v.versionId;
   } catch (err) {
@@ -201,7 +204,7 @@ export async function ingestConversationsBatch(
   // O perfil do PAÍS da organização (issue #1033): o mesmo conjunto de padrões
   // anonimiza e vigia. Resolvido UMA vez por rodada — ler por conversa daria o
   // mesmo resultado e uma consulta por conversa.
-  const padroes = padroesDePii([await perfilDaOrganizacao(admin, organizationId)]);
+  const padroes = padroesDePii([await perfilDaOrganizacao(controlPlane, organizationId)]);
 
   for (const conv of conversations) {
     // Defense in depth: re-check org id.
@@ -217,7 +220,7 @@ export async function ingestConversationsBatch(
     }
 
     // a. Load messages (filter org).
-    const { data: msgRows, error: msgErr } = await admin
+    const { data: msgRows, error: msgErr } = await db
       .from("messages")
       .select("body, direction, sent_at")
       .eq("organization_id", organizationId)
@@ -247,7 +250,7 @@ export async function ingestConversationsBatch(
     // c. False-negative guard: long conversation with zero PII signal is
     //    suspicious -> route to manual review, do NOT ingest.
     if (msgs.length >= VALIDATOR_MIN_MSGS && hits.length === 0) {
-      await admin
+      await db
         .from("conversations")
         .update({ rag_review_status: "pending_review" })
         .eq("id", conv.id)
@@ -281,7 +284,7 @@ export async function ingestConversationsBatch(
       }
     }
     if (leaked) {
-      await admin
+      await db
         .from("conversations")
         .update({ rag_review_status: "skipped" })
         .eq("id", conv.id)
@@ -314,7 +317,7 @@ export async function ingestConversationsBatch(
         break;
       }
 
-      const { error: upsertErr } = await admin.from("ai_chunks").upsert(
+      const { error: upsertErr } = await db.from("ai_chunks").upsert(
         {
           organization_id: organizationId,
           kb_version_id: versionId,
@@ -370,7 +373,7 @@ export async function ingestConversationsBatch(
     }
 
     totalChunkInserts += convChunkInserts;
-    await admin
+    await db
       .from("conversations")
       .update({ rag_review_status: "ingested" })
       .eq("id", conv.id)
@@ -382,10 +385,10 @@ export async function ingestConversationsBatch(
   // g. Finalize version.
   try {
     if (totalChunkInserts > 0) {
-      await markVersionReady(versionId, organizationId, totalChunkInserts);
-      await activateVersion({ organizationId, knowledgeSourceId: sourceId, versionId });
+      await markVersionReady(versionId, organizationId, totalChunkInserts, db);
+      await activateVersion({ organizationId, knowledgeSourceId: sourceId, versionId, db });
     } else {
-      await markVersionFailed(versionId, organizationId, "no_chunks_ingested");
+      await markVersionFailed(versionId, organizationId, "no_chunks_ingested", db);
     }
   } catch (err) {
     console.error(
@@ -396,3 +399,4 @@ export async function ingestConversationsBatch(
 
   return { processed, flaggedReview, skipped, embeddingSkipped: false };
 }
+

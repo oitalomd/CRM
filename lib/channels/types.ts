@@ -4,6 +4,7 @@
 // do provider. Quando a Fase 3 absorver `lib/waha/`, este é o único ponteiro a
 // mudar de casa.
 import type { SendMessageInput } from "@/lib/schemas";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { FetchedMedia } from "@/lib/messaging/media/types";
 import type { OutboundMedia } from "@/lib/waha/media-send";
 
@@ -109,6 +110,8 @@ export interface OutboundContact {
  */
 export interface ChannelTenantScope {
   organizationId: string;
+  /** Cliente de dados já isolado para a organização, quando a operação toca o banco. */
+  dataClient?: SupabaseClient;
 }
 
 export interface OutboundEnvelope extends ChannelTenantScope {
@@ -414,3 +417,4 @@ export interface ChannelTemplateOps {
     input: ChannelTenantScope & { sessionRef: string; name: string; language?: string },
   ): Promise<void>;
 }
+

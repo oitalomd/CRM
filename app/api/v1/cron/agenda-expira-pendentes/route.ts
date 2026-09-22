@@ -53,6 +53,7 @@ import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { agendaSettingsSchema } from "@/lib/schemas/settings";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -69,40 +70,53 @@ async function handle(req: NextRequest): Promise<Response> {
     return fail("forbidden", "Cron secret missing or invalid.", 403, { requestId });
   }
 
-  const admin = createAdminClient();
+  const controlPlane = createAdminClient();
   const agora = new Date();
 
-  // O prazo é POR ORGANIZAÇÃO, então a varredura não pode usar um corte único
-  // de `created_at` no SQL. Busca os pendentes de todas as orgs e aplica o prazo
-  // de cada uma — o volume é pequeno por construção (pendente é estado curto).
-  const { data, error } = await admin
-    .from("calendar_appointments")
-    .select("id, organization_id, created_at, starts_at")
-    .eq("status", "pending")
-    .order("created_at", { ascending: true })
-    .limit(LIMITE_DA_VARREDURA);
-
-  if (error) {
-    logger.error("[agenda-expira-pendentes] consulta falhou", { error: error.message, requestId });
-    return fail("internal_error", "Falha ao buscar pendentes.", 500, { requestId });
-  }
-
-  const linhas = data ?? [];
-  if (linhas.length === 0) {
-    return ok({ examinados: 0, expirados: 0, mantidos: 0 }, { requestId });
-  }
-
-  // Um SELECT por organização presente, não um por linha.
-  const orgs = [...new Set(linhas.map((l) => l.organization_id))];
-  const { data: configs } = await admin
+  // A configuração fica no control plane; as reservas ficam no data plane de
+  // cada organização. Nunca agregamos appointments de tenants diferentes num
+  // cliente service-role compartilhado.
+  const { data: configs, error: configError } = await controlPlane
     .from("organizations")
-    .select("id, settings")
-    .in("id", orgs);
+    .select("id, settings");
+  if (configError) {
+    logger.error("[agenda-expira-pendentes] organizações não puderam ser lidas", { error: configError.message, requestId });
+    return fail("internal_error", "Falha ao buscar configurações da agenda.", 500, { requestId });
+  }
 
   const prazoPorOrg = new Map<string, number>();
   for (const o of configs ?? []) {
     const s = (o.settings as { agenda?: unknown } | null)?.agenda;
     prazoPorOrg.set(o.id, agendaSettingsSchema.parse(s ?? {}).pending_expires_after_minutes);
+  }
+
+  const linhas: Array<{ id: string; organization_id: string; created_at: string; starts_at: string }> = [];
+  const dataClientByOrg = new Map<string, Awaited<ReturnType<typeof getTenantDataClient>>>();
+  for (const orgId of prazoPorOrg.keys()) {
+    if (linhas.length >= LIMITE_DA_VARREDURA) break;
+    try {
+      const dataClient = await getTenantDataClient(orgId, controlPlane);
+      dataClientByOrg.set(orgId, dataClient);
+      const { data, error } = await dataClient
+        .from("calendar_appointments")
+        .select("id, organization_id, created_at, starts_at")
+        .eq("organization_id", orgId)
+        .eq("status", "pending")
+        .order("created_at", { ascending: true })
+        .limit(LIMITE_DA_VARREDURA - linhas.length);
+      if (error) throw error;
+      linhas.push(...((data ?? []) as typeof linhas));
+    } catch (err) {
+      logger.warn("[agenda-expira-pendentes] data plane indisponível", {
+        organizationId: orgId,
+        error: err instanceof Error ? err.message : String(err),
+        requestId,
+      });
+    }
+  }
+
+  if (linhas.length === 0) {
+    return ok({ examinados: 0, expirados: 0, mantidos: 0 }, { requestId });
   }
 
   const expirados: string[] = [];
@@ -130,26 +144,34 @@ async function handle(req: NextRequest): Promise<Response> {
   // aqui, o UPDATE não alcança a linha — e é isso que se quer. Cancelar um
   // compromisso que acabou de ser confirmado seria o pior desfecho possível
   // desta rota.
-  const { data: efetivados, error: erroUpdate } = await admin
-    .from("calendar_appointments")
-    .update({
-      status: "cancelled",
-      cancellation_reason: "Pedido expirado: ninguém confirmou dentro do prazo.",
-    })
-    .in("id", expirados)
-    .eq("status", "pending")
-    .select("id");
-
-  if (erroUpdate) {
-    logger.error("[agenda-expira-pendentes] update falhou", {
-      error: erroUpdate.message,
-      tentados: expirados.length,
-      requestId,
-    });
-    return fail("internal_error", "Falha ao expirar pendentes.", 500, { requestId });
+  const expiradosPorOrg = new Map<string, string[]>();
+  for (const linha of linhas) {
+    if (expirados.includes(linha.id)) {
+      const ids = expiradosPorOrg.get(linha.organization_id) ?? [];
+      ids.push(linha.id);
+      expiradosPorOrg.set(linha.organization_id, ids);
+    }
   }
-
-  const quantos = efetivados?.length ?? 0;
+  let quantos = 0;
+  for (const [orgId, ids] of expiradosPorOrg) {
+    const dataClient = dataClientByOrg.get(orgId);
+    if (!dataClient) continue;
+    const { data: efetivados, error: erroUpdate } = await dataClient
+      .from("calendar_appointments")
+      .update({
+        status: "cancelled",
+        cancellation_reason: "Pedido expirado: ninguém confirmou dentro do prazo.",
+      })
+      .in("id", ids)
+      .eq("organization_id", orgId)
+      .eq("status", "pending")
+      .select("id");
+    if (erroUpdate) {
+      logger.error("[agenda-expira-pendentes] update falhou", { error: erroUpdate.message, orgId, tentados: ids.length, requestId });
+      return fail("internal_error", "Falha ao expirar pendentes.", 500, { requestId });
+    }
+    quantos += efetivados?.length ?? 0;
+  }
 
   // Rodada que não expirou nada NÃO é mutação e não audita — a lei está no
   // CLAUDE.md §Audit log, e `cron-audita-so-quando-ha-efeito.test.ts` varre o
@@ -171,3 +193,4 @@ async function handle(req: NextRequest): Promise<Response> {
 
 export const GET = handle;
 export const POST = handle;
+

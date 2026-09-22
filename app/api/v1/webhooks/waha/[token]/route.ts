@@ -18,6 +18,7 @@ import { ARCHIVED_AT, queryTolerantToMissingArchived } from "@/lib/channels/arch
 import { carregarComportamentoDaInstalacao } from "@/lib/instalacao/comportamento-servidor";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { conferirContratoWaha, lerRoteamentoWaha } from "@/lib/waha/envelope";
 import { dispatchWahaEvent } from "@/lib/waha/ingest";
 import { authenticateWahaWebhook } from "@/lib/waha/webhook-auth";
@@ -103,12 +104,24 @@ export async function POST(req: NextRequest, ctx: RouteCtx): Promise<NextRespons
     return fail("not_found", "unknown webhook token", 404, { requestId });
   }
 
+  const dataClient = await getTenantDataClient(session.organization_id, admin);
+  const { data: dedicatedSession, error: dedicatedSessionError } = await dataClient
+    .from("channel_sessions")
+    .select(
+      "id, organization_id, waha_session_name, webhook_secret_encrypted, status, is_warmup_complete, warmup_started_at",
+    )
+    .eq("organization_id", session.organization_id)
+    .eq("id", session.id)
+    .maybeSingle();
+  if (dedicatedSessionError) return fail("tenant_data_plane_unavailable", dedicatedSessionError.message, 503, { requestId });
+  const routedSession = dedicatedSession ?? session;
+
   // Autenticação fail-closed — regras e o porquê em lib/waha/webhook-auth.ts.
   const sigHeader = req.headers.get("x-webhook-hmac") ?? req.headers.get("X-Webhook-Hmac");
   let sessionSecret: string | null = null;
   try {
-    const dec = await admin.rpc("fn_decrypt_oauth", {
-      ciphertext: session.webhook_secret_encrypted,
+    const dec = await dataClient.rpc("fn_decrypt_oauth", {
+      ciphertext: routedSession.webhook_secret_encrypted,
     });
     if (!dec.error && typeof dec.data === "string") sessionSecret = dec.data;
   } catch {
@@ -125,10 +138,10 @@ export async function POST(req: NextRequest, ctx: RouteCtx): Promise<NextRespons
   if (!auth.ok) {
     await audit({
       action: "webhook.hmac_invalid",
-      organizationId: session.organization_id,
+      organizationId: routedSession.organization_id,
       metadata: {
         provider: "waha",
-        session: session.waha_session_name,
+        session: routedSession.waha_session_name,
         event: roteado.event,
         reason: auth.reason,
         had_signature: Boolean(sigHeader),
@@ -147,9 +160,9 @@ export async function POST(req: NextRequest, ctx: RouteCtx): Promise<NextRespons
     if (key.toLowerCase() === "cookie") return;
     headersJson[key] = value;
   });
-  await admin.from("webhook_events_log").insert({
-    organization_id: session.organization_id,
-    channel_session_id: session.id,
+  await dataClient.from("webhook_events_log").insert({
+    organization_id: routedSession.organization_id,
+    channel_session_id: routedSession.id,
     provider: "waha",
     webhook_path_token: token,
     http_method: "POST",
@@ -179,10 +192,11 @@ export async function POST(req: NextRequest, ctx: RouteCtx): Promise<NextRespons
   }
 
   try {
-    await dispatchWahaEvent(admin, session, contrato.envelope, requestId);
+    await dispatchWahaEvent(dataClient, routedSession, contrato.envelope, requestId);
   } catch (err) {
     console.error("[waha.webhook] handler failed", err);
   }
 
   return ok({ accepted: true }, { requestId });
 }
+

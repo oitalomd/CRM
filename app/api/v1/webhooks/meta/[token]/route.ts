@@ -37,6 +37,7 @@ import { ingestMetaInbound } from "@/lib/channels/meta/ingest";
 import { metaSessionByWebhookToken } from "@/lib/channels/meta/session";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -110,7 +111,7 @@ export async function POST(req: NextRequest, ctx: RouteCtx): Promise<NextRespons
   }
 
   const eventos = parseMetaWebhook(leitura.envelope);
-  const admin = createAdminClient();
+  const dataClient = await getTenantDataClient(session.organizationId, createAdminClient());
   const now = new Date().toISOString();
   /**
    * Desfecho de cada ingestão. Existe porque a versão anterior fazia
@@ -134,7 +135,7 @@ export async function POST(req: NextRequest, ctx: RouteCtx): Promise<NextRespons
       // resolvia a sessão só pelo `phone_number_id` do payload — e duas
       // organizações com o mesmo número faziam a mensagem ser descartada para
       // as duas, com 200 na resposta (issue #236).
-      const r = await ingestMetaInbound(admin, e, { organizationId: session.organizationId });
+      const r = await ingestMetaInbound(dataClient, e, { organizationId: session.organizationId });
       desfechos.push(r.status);
       if (r.status === "failed" || r.status === "no_session") {
         // 2xx continua (a Meta re-entregaria em loop), mas a falha NÃO fica muda:
@@ -150,7 +151,7 @@ export async function POST(req: NextRequest, ctx: RouteCtx): Promise<NextRespons
     }
 
     if (e.kind === "template_status") {
-      await admin
+      await dataClient
         .from("meta_templates")
         .update({ status: e.event, rejected_reason: e.reason, updated_at: now })
         .eq("organization_id", session.organizationId)
@@ -158,7 +159,7 @@ export async function POST(req: NextRequest, ctx: RouteCtx): Promise<NextRespons
         .eq("name", e.templateName)
         .eq("language", e.templateLanguage);
     } else {
-      await admin
+      await dataClient
         .from("messages")
         .update({ status: e.status === "failed" ? "failed" : "sent", updated_at: now })
         .eq("organization_id", session.organizationId)
@@ -176,3 +177,4 @@ export async function POST(req: NextRequest, ctx: RouteCtx): Promise<NextRespons
     { status: 200 },
   );
 }
+

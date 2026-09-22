@@ -18,7 +18,8 @@ import { type NextRequest } from "next/server";
 import { z } from "zod";
 
 import { fail, ok } from "@/lib/api/wrappers";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { requireRole } from "@/lib/auth/require-role";
 import { emitLeadActivity } from "@/lib/leads/activity-emitter";
 import { traduzir } from "@/lib/i18n/dicionario";
@@ -55,7 +56,12 @@ export async function POST(req: NextRequest, ctx: RouteCtx): Promise<Response> {
   const t = (texto: string) => traduzir(texto, authz.user.idioma);
   const { user } = authz;
 
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(authz.org.orgId, createAdminClient());
+  } catch (err) {
+    return fail("tenant_data_plane_unavailable", err instanceof Error ? err.message : "Tenant data plane unavailable.", 503, { requestId });
+  }
 
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
@@ -146,3 +152,4 @@ export async function POST(req: NextRequest, ctx: RouteCtx): Promise<Response> {
 
   return ok({ lead_id: row.id, decision, next_action: atual }, { requestId });
 }
+

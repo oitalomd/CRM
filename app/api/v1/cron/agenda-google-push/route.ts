@@ -5,7 +5,13 @@ import { reconcileAppointment } from "@/lib/agenda/google/sync-executor";
 import { audit } from "@/lib/audit";
 import { env } from "@/lib/env";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 export const dynamic = "force-dynamic";
+interface GooglePushCandidate {
+  id: string;
+  organization_id: string;
+  user_id: string;
+}
 async function executar(req: NextRequest) {
   if (
     ![env.INTERNAL_CRON_SECRET, env.INTERNAL_SECRET]
@@ -17,18 +23,36 @@ async function executar(req: NextRequest) {
       { status: 401 },
     );
   const db = createAdminClient();
-  const { data, error } = await googlePushCandidates(db);
-  if (error)
+  const { data: organizations, error: organizationsError } = await db
+    .from("organizations")
+    .select("id")
+    .limit(25);
+  if (organizationsError)
     return NextResponse.json(
-      { error: { code: "internal_error", message: "Não foi possível ler a pendência Google." } },
+      { error: { code: "internal_error", message: "Não foi possível ler as organizações." } },
       { status: 500 },
     );
+  const dataClientByOrg = new Map<string, ReturnType<typeof createAdminClient>>();
+  const candidates: GooglePushCandidate[] = [];
+  for (const organization of organizations ?? []) {
+    try {
+      const dataClient = await getTenantDataClient(organization.id, db);
+      dataClientByOrg.set(organization.id, dataClient);
+      const { data, error } = await googlePushCandidates(dataClient, organization.id);
+      if (error) throw error;
+      candidates.push(...((data ?? []) as GooglePushCandidate[]));
+    } catch {
+      // Falha de um tenant fica isolada e será reprocessada na próxima rodada.
+    }
+  }
   const effects = new Map<string, { processados: number; falhas: number }>();
-  const active = await apenasDeMembrosAtivos(db, data ?? []);
+  const active = await apenasDeMembrosAtivos(db, candidates);
   for (const item of active) {
+    const dataClient = dataClientByOrg.get(item.organization_id);
+    if (!dataClient) continue;
     let result: string;
     try {
-      result = await reconcileAppointment(db, item.organization_id, item.id);
+      result = await reconcileAppointment(dataClient, item.organization_id, item.id);
     } catch {
       result = "failed";
     }
@@ -46,7 +70,8 @@ async function executar(req: NextRequest) {
         metadata: { direcao: "ida", ...summary },
       });
   }
-  return NextResponse.json({ data: { candidatos: data?.length ?? 0, organizacoes: effects.size } });
+  return NextResponse.json({ data: { candidatos: candidates.length, organizacoes: effects.size } });
 }
 export const GET = executar;
 export const POST = executar;
+

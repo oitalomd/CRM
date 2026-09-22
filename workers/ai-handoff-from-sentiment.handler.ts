@@ -12,6 +12,7 @@ import { serviceFromMessage } from "@/lib/atendimento/origem-mensagem";
 import type { EventHandler, HandlerResult } from "@/lib/event-log/dispatcher";
 import { triggerHandoff } from "@/lib/ai/handoff/orchestrator";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { logger } from "@/lib/logger";
 
 export const AI_HANDOFF_FROM_SENTIMENT_KEY = "ai-handoff-from-sentiment.v1";
@@ -35,7 +36,7 @@ export const aiHandoffFromSentimentHandler: EventHandler = {
       };
     }
 
-    const admin = createAdminClient();
+    const admin = await getTenantDataClient(row.organization_id, createAdminClient());
 
     const boundary = messageId ? await serviceFromMessage(admin, row.organization_id, messageId) : null;
     if (!boundary || (conversationIdHint && boundary.conversation_id !== conversationIdHint)) {
@@ -61,6 +62,7 @@ export const aiHandoffFromSentimentHandler: EventHandler = {
     }
 
     const result = await triggerHandoff({
+      admin,
       serviceBoundary: boundary,
       conversationId,
       organizationId: row.organization_id,
@@ -93,3 +95,4 @@ export const aiHandoffFromSentimentHandler: EventHandler = {
     };
   },
 };
+

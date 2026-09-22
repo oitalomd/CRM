@@ -38,7 +38,9 @@ import { audit } from "@/lib/audit";
 import { ok, fail } from "@/lib/api/wrappers";
 import { requireRole } from "@/lib/auth/require-role";
 import { registrarTrocaDeComando } from "@/lib/inbox/atividade-de-comando";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import type { Conversation } from "@/lib/types/messaging";
 import { traduzir } from "@/lib/i18n/dicionario";
 
@@ -64,12 +66,19 @@ export async function POST(_req: NextRequest, ctx: RouteCtx): Promise<Response> 
   const t = (texto: string) => traduzir(texto, authz.user.idioma);
   const { user, org } = authz;
 
-  const supabase = await createClient();
+  const controlPlane = await createClient();
+
+  let supabase;
+  try {
+    supabase = await getTenantDataClient(org.orgId, createAdminClient());
+  } catch (err) {
+    return fail("tenant_data_plane_unavailable", err instanceof Error ? err.message : "Tenant data plane unavailable.", 503, { requestId });
+  }
 
   // Client do REQUEST, nunca admin: é a policy `conversations_select` que aplica
   // o `visibility_mode`, e ler com service role aqui deixaria um agent fora de
   // escopo pausar o automático de uma conversa que ele nem enxerga.
-  const { data: convData, error: convErr } = await supabase
+  const { data: convData, error: convErr } = await controlPlane
     .from("conversations")
     .select("id, contact_id, status, assigned_to_user_id, bot_silenced_until")
     .eq("id", id)
@@ -164,3 +173,4 @@ export async function POST(_req: NextRequest, ctx: RouteCtx): Promise<Response> 
 
   return ok({ paused: true, assumiu_ao_pausar: assumiu, conversation: final }, { requestId });
 }
+

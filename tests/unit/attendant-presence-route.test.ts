@@ -32,10 +32,14 @@ import { requireRole } from "@/lib/auth/require-role";
 import { ROLE_RANK, type AuthUser, type Role } from "@/lib/auth/types";
 import { requireSupportWrite } from "@/lib/impersonate/support";
 import { audit } from "@/lib/audit";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 vi.mock("@/lib/auth/require-role", () => ({ requireRole: vi.fn() }));
 vi.mock("@/lib/impersonate/support", () => ({ requireSupportWrite: vi.fn(async () => null) }));
 vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
+vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+vi.mock("@/lib/tenancy/data-plane-registry", () => ({ getTenantDataClient: vi.fn() }));
 vi.mock("@/lib/audit", () => ({ audit: vi.fn(async () => {}) }));
 
 const ORG = "22222222-2222-4222-8222-222222222222";
@@ -90,10 +94,10 @@ function fazerSupabase(linhaJaExiste = false) {
 }
 
 async function comSupabase(linhaJaExiste = false) {
-  const { createClient } = await import("@/lib/supabase/server");
   const dublê = fazerSupabase(linhaJaExiste);
-  vi.mocked(createClient).mockResolvedValue(
-    dublê.client as unknown as Awaited<ReturnType<typeof createClient>>,
+  vi.mocked(createAdminClient).mockReturnValue({} as ReturnType<typeof createAdminClient>);
+  vi.mocked(getTenantDataClient).mockResolvedValue(
+    dublê.client as unknown as ReturnType<typeof createAdminClient>,
   );
   return dublê;
 }
@@ -257,3 +261,4 @@ describe("POST /api/v1/attendants/presence — o emissor do sinal", () => {
     expect(escritas).toHaveLength(0);
   });
 });
+

@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import type { EventHandler } from "@/lib/event-log/dispatcher";
 import { AUTOMATION_CONSUMER_KEY, runAutomationForEvent } from "@/lib/automation/engine";
 import { TRIGGER_EVENTS } from "@/lib/schemas/webhooks";
@@ -13,6 +14,9 @@ export const automationRulesHandler: EventHandler = {
   // roda, sem erro nem log.
   events: [...TRIGGER_EVENTS],
   async handle(row) {
-    return runAutomationForEvent(createAdminClient(), row);
+    const controlPlane = createAdminClient();
+    const dataClient = await getTenantDataClient(row.organization_id, controlPlane);
+    return runAutomationForEvent(dataClient, row);
   },
 };
+

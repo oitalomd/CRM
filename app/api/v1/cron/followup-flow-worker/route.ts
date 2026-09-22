@@ -37,13 +37,13 @@ import { createSupabaseAdminClient, runFollowupTick, type FollowupJobRequest } f
 import { createSupabaseFollowupGateDb } from "@/lib/followup/agent-followup-gate";
 import { enviarTextoFixoPendente } from "@/lib/followup/enviar-texto-fixo";
 import { createSupabaseSilenceSweepDb, runSilenceSweep } from "@/lib/followup/silence-sweep";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
 /** Insere o job followup_turn na fila existente (migration 0050) — consumido
  *  pelo handler já pronto em lib/agent-engine/agent/followup-turn.ts. */
-async function enqueueJob(job: FollowupJobRequest): Promise<void> {
-  const admin = createAdminClient();
+async function enqueueJob(admin: ReturnType<typeof createAdminClient>, job: FollowupJobRequest): Promise<void> {
   const { error } = await admin.from("job_queue").insert({
     organization_id: job.organization_id,
     contact_id: job.contact_id,
@@ -51,6 +51,17 @@ async function enqueueJob(job: FollowupJobRequest): Promise<void> {
     payload: job.payload,
   });
   if (error) throw new Error(error.message);
+}
+
+function somaTick(a: { claim_falhou?: boolean; claimed: number; advanced: number; scheduled: number; failed: number; dead: number }, b: typeof a) {
+  return {
+    claim_falhou: Boolean(a.claim_falhou || b.claim_falhou),
+    claimed: a.claimed + b.claimed,
+    advanced: a.advanced + b.advanced,
+    scheduled: a.scheduled + b.scheduled,
+    failed: a.failed + b.failed,
+    dead: a.dead + b.dead,
+  };
 }
 
 async function handle(req: NextRequest): Promise<Response> {
@@ -64,23 +75,58 @@ async function handle(req: NextRequest): Promise<Response> {
     return fail("forbidden", "Cron secret missing or invalid.", 403, { requestId });
   }
 
-  const admin = createAdminClient();
-  const deps = {
-    db: createSupabaseAdminClient(admin),
-    clock: () => new Date(),
-    enqueueJob,
-  };
+  const controlPlane = createAdminClient();
+  const { data: organizations, error: organizationsError } = await controlPlane
+    .from("organizations")
+    .select("id")
+    .limit(50);
+  if (organizationsError) return fail("internal_error", "Não foi possível listar as organizações.", 500, { requestId });
 
-  const confirmation=await admin.rpc("fn_appointment_confirmation_sweep",{});
-  if(confirmation.error) return fail("internal_error","Não foi possível verificar as confirmações de presença.",500,{requestId});
-  if(Number(confirmation.data)>0) void audit({action:"agenda.confirmation_sweep_run",organizationId:null,bypassedRls:true,requestId,metadata:{avisos:Number(confirmation.data)}});
-  let summary;
-  try {
-    summary = await runFollowupTick(deps);
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    logger.error("[followup-flow-worker.cron] runFollowupTick threw", { error: detail, requestId });
-    return fail("internal_error", detail, 500, { requestId });
+  let summary = { claim_falhou: false, claimed: 0, advanced: 0, scheduled: 0, failed: 0, dead: 0 };
+  let confirmationNotices = 0;
+  const orgsWithError: string[] = [];
+
+  for (const organization of organizations ?? []) {
+    const organizationId = organization.id as string;
+    try {
+      const dataClient = await getTenantDataClient(organizationId, controlPlane);
+      const confirmation = await dataClient.rpc("fn_appointment_confirmation_sweep", {});
+      if (confirmation.error) throw confirmation.error;
+      confirmationNotices += Number(confirmation.data ?? 0);
+
+      const deps = {
+        db: createSupabaseAdminClient(dataClient),
+        clock: () => new Date(),
+        enqueueJob: (job: FollowupJobRequest) => enqueueJob(dataClient, job),
+      };
+      summary = somaTick(summary, await runFollowupTick(deps));
+
+      const sweepSummary = await runSilenceSweep({
+        db: createSupabaseSilenceSweepDb(dataClient),
+        gateDb: createSupabaseFollowupGateDb(dataClient),
+        clock: () => new Date(),
+      });
+      if (sweepSummary.enrolled || sweepSummary.pointers_gated_out || sweepSummary.skipped_existing) {
+        void audit({ action: "followup.silence_sweep_run", organizationId, bypassedRls: true, metadata: { ...sweepSummary }, requestId });
+      }
+
+      try {
+        await enviarTextoFixoPendente(dataClient);
+      } catch (err) {
+        logger.error("[followup-flow-worker.cron] enviarTextoFixoPendente threw", {
+          error: err instanceof Error ? err.message : String(err), organizationId, requestId,
+        });
+      }
+    } catch (err) {
+      orgsWithError.push(organizationId);
+      logger.error("[followup-flow-worker.cron] organização falhou", {
+        error: err instanceof Error ? err.message : String(err), organizationId, requestId,
+      });
+    }
+  }
+
+  if (confirmationNotices > 0) {
+    void audit({ action: "agenda.confirmation_sweep_run", organizationId: null, bypassedRls: true, requestId, metadata: { avisos: confirmationNotices } });
   }
 
   // Só audita tick que MEXEU em alguma coisa. Auditar toda batida enchia o
@@ -118,40 +164,7 @@ async function handle(req: NextRequest): Promise<Response> {
     });
   }
 
-  try {
-    const sweepSummary = await runSilenceSweep({
-      db: createSupabaseSilenceSweepDb(admin),
-      gateDb: createSupabaseFollowupGateDb(admin),
-      clock: () => new Date(),
-    });
-    if (sweepSummary.enrolled || sweepSummary.pointers_gated_out || sweepSummary.skipped_existing) {
-      void audit({
-        action: "followup.silence_sweep_run",
-        organizationId: null,
-        bypassedRls: true,
-        metadata: { ...sweepSummary },
-        requestId,
-      });
-    }
-  } catch (err) {
-    // Sweep falhando NUNCA aborta o tick — a resposta abaixo já reflete o
-    // resultado de runFollowupTick, que rodou (e foi auditado) antes disto.
-    const detail = err instanceof Error ? err.message : String(err);
-    logger.error("[followup-flow-worker.cron] runSilenceSweep threw", { error: detail, requestId });
-  }
-
-  // ponytail: instalação sem `agent-worker` (relógio HTTP, cron puro) não tem
-  // quem consuma a fila. Sem este dreno o no_reply avança o grafo e a mensagem
-  // seguinte fica pending. Teto: jobs sem fixed_body (mode ai_message) continuam
-  // precisando do worker.
-  try {
-    await enviarTextoFixoPendente(admin);
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    logger.error("[followup-flow-worker.cron] enviarTextoFixoPendente threw", { error: detail, requestId });
-  }
-
-  return ok(summary, { requestId });
+  return ok({ ...summary, organizations: organizations?.length ?? 0, orgs_with_error: orgsWithError.length }, { requestId });
 }
 
 export async function GET(req: NextRequest): Promise<Response> {
@@ -161,3 +174,4 @@ export async function GET(req: NextRequest): Promise<Response> {
 export async function POST(req: NextRequest): Promise<Response> {
   return handle(req);
 }
+

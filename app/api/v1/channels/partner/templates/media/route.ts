@@ -32,6 +32,7 @@ import { extensaoDe, farejarTipo, pareceSvg } from "@/lib/branding/logo-arquivo"
 import { traduzir } from "@/lib/i18n/dicionario";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -101,7 +102,7 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const ext = extensaoDe(tipoReal);
   const caminho = `${org.orgId}/templates/${randomUUID()}.${ext}`;
-  const admin = createAdminClient();
+  const admin = await getTenantDataClient(org.orgId, createAdminClient());
 
   const { error: erroUp } = await admin.storage
     .from("whatsapp-media")
@@ -124,3 +125,4 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   return ok({ url: assinada.signedUrl, path: caminho }, { requestId });
 }
+

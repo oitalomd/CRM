@@ -162,6 +162,8 @@ export const AUDIT_ACTIONS = [
   "platform_admin.inbox_listed",
   "platform_admin.conversation_viewed",
   "platform_admin.tenants_listed",
+  "platform_admin.tenant_data_plane_registered",
+  "platform_admin.tenant_data_plane_promoted",
   "platform_admin.tenant_viewed",
   "tenant.created_by_platform_admin",
   "platform_admin.tenant_health_viewed",
@@ -787,3 +789,4 @@ export const AUDIT_ACTIONS = [
 
 /** Um código de auditoria. Derivado de `AUDIT_ACTIONS` — não redigite a lista. */
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
+

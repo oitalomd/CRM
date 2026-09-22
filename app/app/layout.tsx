@@ -30,6 +30,17 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   let activeOrg = await resolveActiveOrg(user);
 
+  // Uma conta confirmada sem vínculo ainda não possui escopo de dados. Não
+  // renderizar a casca vazia de /app nesse estado: o Sidebar só consegue
+  // mostrar as portas pessoais (na prática, Perfil), enquanto o caminho
+  // correto é criar a organização e iniciar o onboarding.
+  //
+  // Platform admins e sessões de suporte continuam podendo entrar sem uma
+  // organização ativa, pois têm superfícies próprias fora do tenant.
+  if (!activeOrg && !user.support && !user.is_platform_admin) {
+    redirect("/get-started");
+  }
+
   // Sem organização ativa existem DOIS estados, e eles pedem telas opostas:
   //
   //  - nunca teve  → provisionamento que falhou no signup. `/get-started`
@@ -260,3 +271,4 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     </IdiomaProvider>
   );
 }
+

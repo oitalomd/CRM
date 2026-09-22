@@ -12,6 +12,7 @@
  * regra valendo de verdade — a rota vira transporte puro e não sabe com quem fala.
  */
 import { createAdminClient } from "@/lib/supabase/admin";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { ARCHIVED_AT, queryTolerantToMissingArchived } from "../archived";
 import { CHANNEL_PROVIDER_META } from "../capabilities";
 
@@ -90,10 +91,10 @@ export async function metaSessionByWebhookToken(
  */
 export async function metaSessionForOrg(
   organizationId: string,
+  db: SupabaseClient = createAdminClient(),
 ): Promise<MetaSessaoDaOrg | null> {
-  const admin = createAdminClient();
   const base = () =>
-    admin
+    db
       .from("channel_sessions")
       // `meta_phone_number_id` entra na seleção porque é a segunda metade da chave da
       // credencial (`organization_id` + ele): sem o número, quem chama não tem como
@@ -117,3 +118,4 @@ export async function metaSessionForOrg(
     phoneNumberId: data.meta_phone_number_id ?? null,
   };
 }
+

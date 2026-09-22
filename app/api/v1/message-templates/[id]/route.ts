@@ -14,7 +14,8 @@ import { audit } from "@/lib/audit";
 import { fail, ok, noContent } from "@/lib/api/wrappers";
 import { requireRole } from "@/lib/auth/require-role";
 import { updateTemplateSchema } from "@/lib/schemas/templates";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 import { traduzir } from "@/lib/i18n/dicionario";
 
 export const dynamic = "force-dynamic";
@@ -44,7 +45,7 @@ export async function PATCH(req: NextRequest, { params }: RouteParams): Promise<
     });
   }
 
-  const supabase = await createClient();
+  const supabase = await getTenantDataClient(org.orgId, createAdminClient());
   const { data, error } = await supabase
     .from("message_templates")
     .update({ ...parsed.data, updated_at: new Date().toISOString() })
@@ -77,7 +78,7 @@ export async function DELETE(_req: NextRequest, { params }: RouteParams): Promis
   const { user, org } = authz;
   const { id } = await params;
 
-  const supabase = await createClient();
+  const supabase = await getTenantDataClient(org.orgId, createAdminClient());
   // .select() confirma que a linha existia E era visível/apagável pela RLS.
   // Sem isso, um DELETE barrado pela RLS afeta 0 linhas mas ainda retornaria
   // 204 + audit falso (mutação que não ocorreu). Espelha a semântica do PATCH.
@@ -101,3 +102,4 @@ export async function DELETE(_req: NextRequest, { params }: RouteParams): Promis
   });
   return noContent(requestId);
 }
+

@@ -41,6 +41,7 @@ import {
 import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export const dynamic = "force-dynamic";
 
@@ -78,95 +79,117 @@ async function handle(req: NextRequest): Promise<Response> {
   const admin = createAdminClient();
   const agora = new Date();
 
-  // Os avisos abertos vêm ANTES das conexões: eles são a lista do que pode
-  // precisar ser fechado, inclusive de canal que sumiu da varredura (arquivado).
-  const { data: abertosBruto, error: erroAvisos } = await admin
-    .from("agent_inbox_items")
-    .select("id, ref_id")
-    .eq("kind", KIND_CANAL_MUDO)
-    .eq("status", "open")
-    .limit(LIMITE);
-
-  if (erroAvisos) {
-    logger.error("[canal-mudo-watcher] leitura dos avisos falhou", {
-      detail: erroAvisos.message,
+  const { data: organizations, error: organizationsError } = await admin
+    .from("organizations")
+    .select("id");
+  if (organizationsError) {
+    logger.error("[canal-mudo-watcher] falha ao listar organizações", {
+      detail: organizationsError.message,
       requestId,
     });
-    return fail("internal_error", erroAvisos.message, 500, { requestId });
+    return fail("internal_error", organizationsError.message, 500, { requestId });
   }
 
-  const abertos = new Map<string, AvisoAberto>();
-  for (const a of (abertosBruto ?? []) as AvisoAberto[]) {
-    if (a.ref_id !== null) abertos.set(a.ref_id, a);
-  }
-
-  const { data: canaisBruto, error: erroCanais } = await admin
-    .from("channel_sessions")
-    .select("id, organization_id, status, archived_at, last_status_change_at, metadata")
-    .is("archived_at", null)
-    .limit(LIMITE);
-
-  if (erroCanais) {
-    logger.error("[canal-mudo-watcher] leitura das conexões falhou", {
-      detail: erroCanais.message,
-      requestId,
-    });
-    return fail("internal_error", erroCanais.message, 500, { requestId });
-  }
-
-  const canais = (canaisBruto ?? []) as CanalParaAvaliar[];
   let avisados = 0;
   let resolvidos = 0;
+  let canaisExaminados = 0;
 
-  const resolver = async (aviso: AvisoAberto, motivo: MotivoDaResolucao): Promise<void> => {
-    const { data } = await admin
-      .from("agent_inbox_items")
-      .update({
-        status: "resolved",
-        body: `${CORPO_DO_AVISO}\n\nResolvido pelo sistema: ${MOTIVO_LEGIVEL[motivo]}.`,
-      })
-      .eq("id", aviso.id)
-      // O `status` no filtro é a trava: duas rodadas simultâneas (cron + curl à
-      // mão) não fecham o mesmo aviso duas vezes nem inflam a contagem.
-      .eq("status", "open")
-      .select("id")
-      .maybeSingle();
-    if (data) resolvidos++;
-  };
-
-  for (const canal of canais) {
-    const desfecho = avaliarCanal(canal, agora);
-    const aberto = abertos.get(canal.id);
-    abertos.delete(canal.id);
-
-    if (desfecho.acao === "resolver") {
-      if (aberto) await resolver(aberto, desfecho.motivo);
+  for (const organization of organizations ?? []) {
+    let dataClient: ReturnType<typeof createAdminClient>;
+    try {
+      dataClient = await getTenantDataClient(organization.id, admin);
+    } catch (err) {
+      logger.warn("[canal-mudo-watcher] data plane indisponível; organização ignorada", {
+        organizationId: organization.id,
+        error: err instanceof Error ? err.message : String(err),
+        requestId,
+      });
       continue;
     }
-    if (desfecho.acao === "aguardar" || aberto) continue;
 
-    const { data } = await admin
+    // Os avisos abertos vêm antes das conexões: eles também cobrem canal que
+    // sumiu da varredura por ter sido arquivado.
+    const { data: abertosBruto, error: erroAvisos } = await dataClient
       .from("agent_inbox_items")
-      .insert({
-        organization_id: canal.organization_id,
-        kind: KIND_CANAL_MUDO,
-        // `warn`, não `critical`: nada está quebrado, e o canal foi configurado
-        // assim de propósito. Crítico aqui gastaria o alarme que a Central
-        // reserva para o que já custou dinheiro ou cliente.
-        severity: "warn",
-        title: "Este canal está em modo de teste — a IA não responde ninguém",
-        body: `${CORPO_DO_AVISO}\n\nAssim há ${desfecho.diasMudo} dia(s).`,
-        ref_kind: "channel_session",
-        ref_id: canal.id,
-      })
-      .select("id")
-      .maybeSingle();
-    if (data) avisados++;
-  }
+      .select("id, ref_id")
+      .eq("organization_id", organization.id)
+      .eq("kind", KIND_CANAL_MUDO)
+      .eq("status", "open")
+      .limit(LIMITE);
+    if (erroAvisos) {
+      logger.error("[canal-mudo-watcher] leitura dos avisos falhou", {
+        organizationId: organization.id,
+        detail: erroAvisos.message,
+        requestId,
+      });
+      continue;
+    }
+    const abertos = new Map<string, AvisoAberto>();
+    for (const a of (abertosBruto ?? []) as AvisoAberto[]) {
+      if (a.ref_id !== null) abertos.set(a.ref_id, a);
+    }
 
-  // O que sobrou no mapa é aviso cujo canal não apareceu na varredura: ele foi
-  // arquivado (o filtro acima) ou apagado. Nos dois casos deixou de ser problema.
-  for (const aviso of abertos.values()) await resolver(aviso, "canal_arquivado");
+    const { data: canaisBruto, error: erroCanais } = await dataClient
+      .from("channel_sessions")
+      .select("id, organization_id, status, archived_at, last_status_change_at, metadata")
+      .eq("organization_id", organization.id)
+      .is("archived_at", null)
+      .limit(LIMITE);
+    if (erroCanais) {
+      logger.error("[canal-mudo-watcher] leitura das conexões falhou", {
+        organizationId: organization.id,
+        detail: erroCanais.message,
+        requestId,
+      });
+      continue;
+    }
+
+    const canais = (canaisBruto ?? []) as CanalParaAvaliar[];
+    canaisExaminados += canais.length;
+    const resolver = async (aviso: AvisoAberto, motivo: MotivoDaResolucao): Promise<void> => {
+      const { data } = await dataClient
+        .from("agent_inbox_items")
+        .update({
+          status: "resolved",
+          body: `${CORPO_DO_AVISO}\n\nResolvido pelo sistema: ${MOTIVO_LEGIVEL[motivo]}.`,
+        })
+        .eq("id", aviso.id)
+        .eq("organization_id", organization.id)
+        .eq("status", "open")
+        .select("id")
+        .maybeSingle();
+      if (data) resolvidos++;
+    };
+
+    for (const canal of canais) {
+      const desfecho = avaliarCanal(canal, agora);
+      const aberto = abertos.get(canal.id);
+      abertos.delete(canal.id);
+      if (desfecho.acao === "resolver") {
+        if (aberto) await resolver(aberto, desfecho.motivo);
+        continue;
+      }
+      if (desfecho.acao === "aguardar" || aberto) continue;
+
+      const { data } = await dataClient
+        .from("agent_inbox_items")
+        .insert({
+          organization_id: organization.id,
+          kind: KIND_CANAL_MUDO,
+          severity: "warn",
+          title: "Este canal está em modo de teste — a IA não responde ninguém",
+          body: `${CORPO_DO_AVISO}\n\nAssim há ${desfecho.diasMudo} dia(s).`,
+          ref_kind: "channel_session",
+          ref_id: canal.id,
+        })
+        .select("id")
+        .maybeSingle();
+      if (data) avisados++;
+    }
+
+    // O que sobrou é aviso de canal arquivado ou apagado.
+    for (const aviso of abertos.values()) await resolver(aviso, "canal_arquivado");
+  }
 
   // Rodada que não abriu nem fechou nada NÃO é mutação e não ocupa linha na
   // auditoria: 365 batidas por ano numa instalação que configurou tudo no
@@ -176,12 +199,12 @@ async function handle(req: NextRequest): Promise<Response> {
       action: "channel.canal_mudo_watcher_run",
       organizationId: null,
       bypassedRls: true,
-      metadata: { canais: canais.length, avisados, resolvidos, diasAteAvisar: DIAS_ATE_AVISAR },
+      metadata: { canais: canaisExaminados, avisados, resolvidos, diasAteAvisar: DIAS_ATE_AVISAR },
       requestId,
     });
   }
 
-  return ok({ canais: canais.length, avisados, resolvidos }, { requestId });
+  return ok({ canais: canaisExaminados, avisados, resolvidos }, { requestId });
 }
 
 export async function GET(req: NextRequest): Promise<Response> {
@@ -191,3 +214,4 @@ export async function GET(req: NextRequest): Promise<Response> {
 export async function POST(req: NextRequest): Promise<Response> {
   return handle(req);
 }
+

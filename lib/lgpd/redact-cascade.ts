@@ -17,6 +17,7 @@
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 export interface CascadeResult {
   alreadyAnonymized: boolean;
@@ -34,10 +35,11 @@ export interface CascadeArgs {
   organizationId: string;
   contactId: string;
   requestId: string;
+  admin?: SupabaseClient;
 }
 
 export async function cascadeRedactContact(args: CascadeArgs): Promise<CascadeResult> {
-  const admin = createAdminClient();
+  const admin = args.admin ?? createAdminClient();
 
   // FOTO DE PERFIL — enfileirada ANTES da cascata, e a ordem importa.
   //
@@ -120,3 +122,4 @@ export async function cascadeRedactContact(args: CascadeArgs): Promise<CascadeRe
     mediaPaths: result.media_paths ?? [],
   };
 }
+

@@ -8,6 +8,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { getWahaClient } from "@/lib/waha/client";
 import { connectWahaChannel, ChannelConnectionError } from "@/lib/channels/connect-waha";
 import { loadOnboardingChannel } from "@/lib/channels/onboarding-session";
+import { getTenantDataClient } from "@/lib/tenancy/data-plane-registry";
 
 export async function GET(): Promise<Response> {
   const requestId = randomUUID();
@@ -16,7 +17,7 @@ export async function GET(): Promise<Response> {
   if (await mfaEmDivida()) return fail("mfa_required", "Confirme a verificação em duas etapas.", 403, { requestId });
   const waha = getWahaClient(); if (!waha) return ok({ status: "WAHA_NOT_CONFIGURED", session: null }, { requestId });
   try {
-    const db = await createClient(); const channel = await loadOnboardingChannel(db, org.orgId);
+    const db = await getTenantDataClient(org.orgId, await createClient()); const channel = await loadOnboardingChannel(db, org.orgId);
     if (!channel || channel.archived_at) return ok({ status: "NOT_STARTED", session: null }, { requestId });
     const remote = await waha.getVerifiedSession(channel.waha_session_name);
     const status = remote?.status ?? "STOPPED";
@@ -35,7 +36,8 @@ export async function POST(req: Request): Promise<Response> {
   if (await mfaEmDivida()) return fail("mfa_required", "Confirme a verificação em duas etapas.", 403, { requestId });
   const waha = getWahaClient(); if (!waha) return fail("waha_not_configured", "O serviço de conexão está indisponível. Tente novamente.", 503, { requestId });
   try {
-    const result = await connectWahaChannel(await createClient(), createAdminClient(), waha, {
+    const dataClient = await getTenantDataClient(auth.org.orgId, createAdminClient());
+    const result = await connectWahaChannel(dataClient, dataClient, waha, {
       organizationId: auth.org.orgId, idempotencyKey: req.headers.get("Idempotency-Key") ?? "",
       userId: auth.user.id, requestId, onboarding: true, restart: new URL(req.url).searchParams.get("restart") === "1",
     });
@@ -49,3 +51,4 @@ export async function POST(req: Request): Promise<Response> {
     return fail("internal_error", "Não foi possível concluir a conexão. Tente novamente.", 500, { requestId });
   }
 }
+
