@@ -118,6 +118,7 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
 
       const media = await adapter.fetchInboundMedia({
         organizationId: activeOrg.orgId,
+        dataClient,
         sessionRef,
         url: msg.media_url,
         hintMime: msg.media_mime,
